@@ -260,14 +260,20 @@ class ProbeSuite:
     def probe_discovered(self, max_cases=15):
         """Immediately verify fresh same-origin URLs recorded during crawl."""
         a = self.a
-        audited = set(getattr(a, "requested_urls", ()))
+        audited = set(getattr(a, "successful_get_urls", ()))
+        prior_verified = set(getattr(a, "prior_verified_urls", ()))
+        recheck = bool(getattr(a, "recheck_prior_urls", False))
+        # New unverified discoveries must not starve behind old alphabetically
+        # earlier paths. --recheck-urls can explicitly revisit old entries.
+        candidates = sorted(a.wordlist, key=lambda url: (url in prior_verified, url))
         count = 0
-        for url in sorted(a.wordlist):
+        for url in candidates:
             if count >= max_cases or a.request_count >= a.limit:
                 break
-            # Don't request URLs containing sensitive or mutation-ish paths.
             path = urllib.parse.urlsplit(url).path
             if not safe_candidate(a, path) or url in audited:
+                continue
+            if url in prior_verified and not recheck:
                 continue
             status, body, _ = a.request(path, include_credentials=False)
             self.completed += 1
