@@ -2,4 +2,11 @@ __pycache__/
 *.egg-info/
 .venv/
 *.pyc
-\n# Scan output and imported confidential requests\naudit/\nreports/\nwordlist.txt\najax-actions.txt\nrequest.txt\n*.burp\n
+
+# Scan output and imported confidential requests
+audit/
+reports/
+wordlist.txt
+ajax-actions.txt
+request.txt
+*.burp
