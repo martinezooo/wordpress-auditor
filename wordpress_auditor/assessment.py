@@ -11,6 +11,9 @@ VERIFIED = {
     "confirmed-public-app-password-metadata": ("MEDIUM", "confirmed"),
     "confirmed-public-env-config": ("HIGH", "confirmed"),
     "confirmed-public-git-metadata": ("MEDIUM", "confirmed"),
+    "confirmed-public-nonpublic-wp-content": ("MEDIUM", "confirmed"),
+    "confirmed-public-private-comment-fields": ("MEDIUM", "confirmed"),
+    "confirmed-unsafe-wp-registration-default-role": ("HIGH", "confirmed"),
 }
 
 def assess(name: str, status: int | None, visibility: str, detail: str):

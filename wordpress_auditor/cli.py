@@ -16,6 +16,7 @@ from .reporting import format_terminal, format_markdown
 from .console import LivePrinter, supports_color, color_summary
 from .check_catalog import coverage as build_coverage, summary as coverage_summary
 from .check_catalog import describe_plan, render_coverage_markdown
+from .core_scenarios import operation_matrix, matrix_markdown
 from .wp_identity import Credentials, RoleSession
 from .queue import load_previous as load_url_queue, save as save_url_queue
 
@@ -289,7 +290,19 @@ def main(argv=None):
                                "coverage.md")
     with open(coverage_md, "w", encoding="utf-8") as f:
         f.write(render_coverage_markdown(checks))
+    # One operation has several channels. Keep detection distinct from
+    # verified execution; no writes or extra network calls for this report.
+    matrix = operation_matrix(auditor)
+    operations_path = os.path.join(
+        os.path.dirname(os.path.abspath(wordlist_out)), "core-operations.json")
+    with open(operations_path, "w", encoding="utf-8") as f:
+        json.dump(matrix, f, indent=2, ensure_ascii=False)
+    operations_md = os.path.join(
+        os.path.dirname(os.path.abspath(wordlist_out)), "core-operations.md")
+    with open(operations_md, "w", encoding="utf-8") as f:
+        f.write(matrix_markdown(matrix))
     summary = summarize(auditor, rows, verbose=a.verbose)
+    summary += "\nWordPress operation matrix: " + operations_md
     summary += "\nURL queue: %d checked, %d pending. Details: %s" % (
         queue["checked_count"], queue["pending_count"], queue_path)
     summary += "\nTechnique coverage: " + coverage_path

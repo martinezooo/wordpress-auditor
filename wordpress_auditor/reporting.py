@@ -8,6 +8,9 @@ DESCRIPTIONS = {
         "One user-approved comment write and independent read-back.",
     "XML-RPC protocol diagnostics":
         "GET handshake, safe metadata calls, unknown-method and malformed-XML faults.",
+    "WordPress core private-content and comment checks":
+        "Anonymous REST reads of drafts/private posts, pages, moderated comments "
+        "and private edit fields; verify WordPress object status, not HTTP 200 alone.",
     "Admin access-control comparison":
         "Compare /wp-admin/ with a rewritten request and random-path control.",
     "Comment/review marker search":

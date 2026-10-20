@@ -100,6 +100,9 @@ class Auditor:
         self.plugin_slugs = set()
         self.theme_slugs = set()
         self.wordlist = set()
+        self.rest_route_methods = {}
+        self.xmlrpc_methods = set()
+        self.comment_forms = set()
         self.requested_urls = set()
         self.successful_get_urls = set()
         self.prior_verified_urls = set()
@@ -236,6 +239,9 @@ class Auditor:
             text = body.decode("utf-8", "ignore")
             self._wordlist_url(path)
             self.ajax_actions.update(self.extract_ajax_actions(text))
+            if re.search(r"""<form\b[^>]{0,800}\baction\s*=\s*['"][^'"]*wp-comments-post\.php(?:\?[^'"]*)?['"]""",
+                         text, re.I):
+                self.comment_forms.add(report_url(safe_url(self.base, path)))
             for raw in re.findall(r"""(?:href|src|action)\s*=\s*['"]([^'"]+)['"]""", text, re.I):
                 target = safe_url(self.base, html.unescape(raw))
                 if not self._allowed(target):
@@ -454,6 +460,13 @@ class Auditor:
                     if isinstance(routes, dict):
                         from .probes import safe_candidate
                         for route, info in list(routes.items())[:400]:
+                            if isinstance(route, str) and re.fullmatch(
+                                    r"/[A-Za-z0-9_./-]{1,150}", route):
+                                raw_methods = (info or {}).get("methods", []) if isinstance(info, dict) else []
+                                if isinstance(raw_methods, list):
+                                    self.rest_route_methods[route] = sorted(
+                                        {m for m in raw_methods
+                                         if isinstance(m, str) and m in METHODS})
                             if not isinstance(route, str) or not route.startswith("/"):
                                 continue
                             if any(char in route for char in ("(", ")", "{", "}")):
@@ -468,6 +481,12 @@ class Auditor:
                     self.results[-1].detail = sanitize_detail(
                         self.results[-1].detail + " marker-found")
         self._phase("WordPress/WooCommerce REST and public surfaces", _core)
+
+        from .core_scenarios import audit_wordpress_core
+        self._phase("WordPress core private-content and comment checks",
+                    lambda: audit_wordpress_core(self),
+                    enabled=full and self.limit >= 55,
+                    reason="requires smart/full mode and at least 55 request budget")
 
         def _crawl_and_inspect():
             self.discover_ajax(
@@ -592,6 +611,23 @@ class Auditor:
             st, b, _ = self.request(
                 path, "POST", payload, {"Content-Type": "text/xml"},
                 include_credentials=False)
+            if label == "system.listMethods" and st == 200 and b and not re.search(
+                    rb"<!DOCTYPE|<!ENTITY", b, re.I):
+                try:
+                    root = ET.fromstring(b)
+                    if root.tag == "methodResponse" and root.find("./fault") is None:
+                        wanted = {
+                            "wp.newComment", "wp.editComment", "wp.deleteComment",
+                            "wp.newPost", "wp.uploadFile", "wp.getUsersBlogs",
+                            "pingback.ping", "system.multicall",
+                        }
+                        methods = {
+                            x.text for x in root.findall(".//array/data/value/string")
+                            if x.text in wanted
+                        }
+                        self.xmlrpc_methods.update(methods)
+                except (ET.ParseError, ValueError):
+                    pass
             detail = parse_xmlrpc_response(b) if b else "empty response"
             if st in (401, 403):
                 detail = "XML-RPC POST access denied (HTTP %s)" % st

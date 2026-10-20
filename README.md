@@ -73,12 +73,38 @@ and a no-redirect, same-origin HTTP transport.
 | WooCommerce | Public Store API versus protected WooCommerce REST routes and product reviews |
 | AJAX | Discover action names from HTML/JavaScript and same-origin asset references |
 | Configuration | Public wp-config backups, .env, debug.log, .git/HEAD and WordPress content directory listings |
+| Core private-content access | Anonymous REST queries for draft/private/pending posts/pages, moderated comments and private comment fields |
+| Comment capabilities | Read-only identification of open comments and possible classic/REST/XML-RPC creation channels; no automatic POST |
 | Routing | HTTP HEAD/OPTIONS, admin access checks, path/header normalization controls |
 | Discovery | REST route index, HTML, JS, sitemap, persisted wordlist and bounded read-back |
 
 Plugin and theme asset paths are identified **without version matching or CVE lookups**.
 Sensitive response bodies, user email addresses, passwords, tokens and cookies
 are never copied into report findings.
+
+### Focus: WordPress Core misconfigurations, not generic exploitation
+
+This project prioritizes WordPress-specific mistakes. In smart and deep
+mode, an additional read-only module asks WordPress REST whether anonymous
+users can read actual draft/private/pending posts or pages, moderated
+comments, or moderator-only comment fields. It also flags the particularly dangerous
+combination of anonymous site settings showing registration enabled and
+the administrator role as the default for new accounts. No user is created.
+Only a JSON WordPress object
+with a numeric ID, matching private status or sensitive field, confirms
+exposure. HTTP 200 with a login/soft-404 page does not.
+
+It also checks sampled public post comment settings. Comments being enabled,
+an XML-RPC method being listed, or a REST route advertising POST are
+capabilities, not vulnerabilities. The generated core-operations.md groups
+operations by channel (classic form, REST, XML-RPC), and explicitly
+distinguishes route discovery from an executed test.
+The matrix never sends write requests.
+
+Active comment submission remains an explicit, single-marker opt-in via
+--post-comment; never triggered by --full or --deep. No brute-force,
+DoS, generic XSS/SQLi/IDOR payloads, plugin-version CVE matching, or blind
+WooCommerce cart/checkout requests are part of the core checks.
 
 A 403 to XML-RPC GET doesn't automatically stop testing: one safe
 system.listMethods POST is attempted to distinguish GET filtering from XML-RPC
@@ -180,6 +206,7 @@ Files are placed in the ignored local audit/ directory by default.
 | latest-report.json | Individual results with HTTP status, severity, confidence and sanitized detail |
 | wordlist.txt | Deduplicated same-origin URL paths, merged between scans |
 | url-queue.json | Same-origin URL verification state: checked vs pending |
+| core-operations.json / core-operations.md | Per-operation channels: DISCOVERED is not an executed write, TESTED means an actual read-only check ran, UNKNOWN is not assumed safe |
 | ajax-actions.txt | Discovered AJAX actions (no automatic write requests) |
 
 ## Does it test every path?

@@ -184,10 +184,18 @@ class WordPressIdentity:
             elif kind == "settings":
                 confirmed = status == 200 and isinstance(data, dict) and (
                     "siteurl" in data or "default_role" in data or "users_can_register" in data)
-                verdict = "review-public-wp-settings" if confirmed else (
-                    "auth-required" if status in (401, 403) else "unverified")
-                detail = "Administrative site settings returned anonymously; review access policy" if confirmed else (
-                    "Private settings not verified (HTTP %s)" % status)
+                registration_open = (
+                    confirmed and data.get("users_can_register") is True
+                    and data.get("default_role") == "administrator")
+                if registration_open:
+                    verdict = "confirmed-unsafe-wp-registration-default-role"
+                    detail = ("Anonymous WP settings indicate registration enabled with administrator "
+                              "as the default role; no account creation attempted")
+                else:
+                    verdict = "review-public-wp-settings" if confirmed else (
+                        "auth-required" if status in (401, 403) else "unverified")
+                    detail = "Administrative site settings returned anonymously; review access policy" if confirmed else (
+                        "Private settings not verified (HTTP %s)" % status)
             else:
                 private_collection = status == 200 and isinstance(data, list) and any(
                     isinstance(x, dict) and
