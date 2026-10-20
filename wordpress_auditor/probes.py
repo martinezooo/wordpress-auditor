@@ -85,6 +85,11 @@ def safe_candidate(auditor, entry):
     if UNSAFE_PATH.search(entry):
         return None
     parsed = urllib.parse.urlsplit(entry)
+    # Even some GETs create sessions/carts; leave these for manual approval.
+    if any(segment in ("cart", "checkout", "payment", "payments",
+                       "session", "sessions", "download", "downloads")
+           for segment in parsed.path.lower().split("/")):
+        return None
     if parsed.fragment:
         entry = entry.split("#", 1)[0]
     if any(k not in ALLOWED_QUERY for k in urllib.parse.parse_qs(parsed.query)):

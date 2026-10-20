@@ -3,6 +3,7 @@ import csv
 import io
 import json
 import os
+import sys
 from collections import Counter
 from urllib.parse import urlsplit
 
@@ -10,44 +11,13 @@ from .probes import safe_candidate
 
 from .auditor import Auditor, parse_burp, report_url
 from .probes import ssrf_oast_probe
+from .reporting import format_terminal, format_markdown
 
 
 def summarize(auditor, rows, verbose=False):
-    """Compact, factual console output without raw response content."""
-    statuses = Counter(str(r["status"]) if r["status"] is not None else "ERR" for r in rows)
-    http = " ".join("%s:%s" % (k, statuses[k]) for k in sorted(statuses)) or "no results"
-    lines = [
-        "WordPress Auditor | " + report_url(auditor.base),
-        "Requests %d/%d | Checks %d | URLs %d | AJAX actions %d" %
-        (auditor.request_count, auditor.limit, len(rows), len(auditor.wordlist), len(auditor.ajax_actions)),
-        "Payload variants %d | Method checks %d | Discovered-URL checks %d" %
-        (auditor.payload_cases, auditor.method_checks, auditor.discovered_checks),
-        "HTTP status: " + http,
-    ]
-    xmlrpc = [r for r in rows if r["name"].startswith("XML-RPC")]
-    if xmlrpc:
-        lines.append("XML-RPC: %d diagnostic responses; see --format json for details" % len(xmlrpc))
-    notable = [r for r in rows if (
-        (r["status"] is not None and r["status"] >= 500
-         and not (r["status"] == 501 and r["name"].startswith("HTTP method ")
-                  and "method-not-supported" in r["detail"]))
-        or "requires-review" in r["detail"]
-        or r["visibility"] in ("confirmed-public", "confirmed-authenticated")
-    )]
-    if any(r["name"] == "opt-in SSRF OAST injection" for r in rows):
-        lines.append("SSRF/OAST: 1 injection attempted; check Collaborator for a callback.")
-    if notable:
-        lines.append("Needs review (%d):" % len(notable))
-        for r in notable[:5]:
-            path = urlsplit(r["url"]).path
-            lines.append("  %s %s (%s)" % (r["status"], path, r["name"][:45]))
-        if len(notable) > 5:
-            lines.append("  ... %d more" % (len(notable) - 5))
-    if verbose:
-        for r in rows:
-            lines.append("  %s %-22s %s" % (r["status"], r["visibility"][:22], urlsplit(r["url"]).path))
-    lines.append("Detailed output: --format json | csv | md; use --output FILE to save.")
-    return "\n".join(lines)
+    """Human-readable coverage, observations and remaining limitations."""
+    return format_terminal(auditor, rows, verbose=verbose)
+
 
 def render_details(rows, fmt):
     if fmt == "json":
@@ -91,7 +61,11 @@ def main(argv=None):
     p.add_argument("--delay", type=float, default=0.2)
     p.add_argument("--max-requests", type=int, default=None)
     p.add_argument("--depth", type=int, default=1)
-    p.add_argument("--full", action="store_true", help="more REST, XML-RPC and payload controls")
+    p.add_argument("--full", action="store_true", help="smart/full scan (the default)")
+    p.add_argument("--quick", action="store_true",
+                   help="small preliminary scan instead of the default smart audit")
+    p.add_argument("--progress", action="store_true",
+                   help="stream scan phase progress to stderr (TTY enables automatically)")
     p.add_argument("--deep", action="store_true",
                    help="larger in-scope GET/header payload suite (implies --full)")
     p.add_argument("--payloads", metavar="ZIP_OR_DIR",
@@ -115,10 +89,14 @@ def main(argv=None):
     p.add_argument("--verbose", action="store_true", help="show each checked endpoint")
     p.add_argument("--output", "--out", help="save report (extension .json, .csv, .md)")
     a = p.parse_args(argv)
+    if a.quick and (a.deep or a.full):
+        p.error("--quick is incompatible with --deep and --full")
+    if not a.quick:
+        a.full = True
     if a.deep:
         a.full = True
     if a.max_requests is None:
-        a.max_requests = 350 if a.deep else 160 if a.full else 60
+        a.max_requests = 350 if a.deep else 180 if a.full else 60
     if a.payload_limit is None:
         a.payload_limit = 160 if a.deep else 36 if a.full else 6
     if a.max_requests < 1 or a.delay < 0 or a.timeout <= 0:
@@ -145,6 +123,15 @@ def main(argv=None):
         url = a.url
     auditor = Auditor(url, headers, a.cookie, a.proxy, limit=a.max_requests, delay=a.delay, timeout=a.timeout,
                       authorized=a.authorized, scheme=a.scheme)
+    if a.progress or (sys.stderr.isatty() and a.format == "summary"):
+        def progress(event, title, auditor, phase=None):
+            if event == "start":
+                print("  => " + title + " ...", file=sys.stderr, flush=True)
+            elif phase is not None:
+                print("     %d requests; %d results; budget %d/%d" %
+                      (phase["requests"], phase["checks"], auditor.request_count, auditor.limit),
+                      file=sys.stderr, flush=True)
+        auditor.progress_callback = progress
     if a.payloads:
         # Validate local payload input before contacting any target.
         from .probes import get_payloads
@@ -191,7 +178,12 @@ def main(argv=None):
         f.write("".join(action + "\n" for action in sorted(auditor.ajax_actions | old_actions)))
     rows = [r.__dict__ for r in results]
     summary = summarize(auditor, rows, verbose=a.verbose)
-    summary += "\nWordlist: " + wordlist_out
+    summary += "\n\nSaved wordlist: " + wordlist_out
+    summary_path = os.path.join(os.path.dirname(os.path.abspath(wordlist_out)),
+                                "scan-summary.md")
+    with open(summary_path, "w", encoding="utf-8") as f:
+        f.write(format_markdown(auditor, rows))
+    summary += "\nScan explanation: " + summary_path
     if a.output:
         ext = os.path.splitext(a.output)[1].lower()
         output_fmt = a.format if a.format != "summary" else {
@@ -203,6 +195,11 @@ def main(argv=None):
         print(summary)
         print("Saved full report: " + a.output)
     elif a.format == "summary":
+        report_path = os.path.join(os.path.dirname(os.path.abspath(wordlist_out)),
+                                   "latest-report.json")
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write(render_details(rows, "json"))
         print(summary)
+        print("Detailed JSON: " + report_path)
     else:
         print(render_details(rows, a.format))

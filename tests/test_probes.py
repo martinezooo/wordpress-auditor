@@ -158,10 +158,10 @@ class TestPayloadProbes(unittest.TestCase):
         a = Auditor(self.url, limit=100, delay=0)
         a.discover(full=True, payload_limit=10)
         methods = [r.name for r in a.results if r.name.startswith("HTTP method ")]
-        self.assertEqual(len(methods), 12)
+        self.assertEqual(len(methods), min(12, max(2, a.limit // 12)))
         self.assertTrue(all(name in ("HTTP method HEAD", "HTTP method OPTIONS")
                             for name in methods))
-        self.assertEqual(a.method_checks, 12)
+        self.assertEqual(a.method_checks, len(methods))
 
     def test_oast_rejects_direct_private_ip_callback(self):
         a = Auditor(self.url)

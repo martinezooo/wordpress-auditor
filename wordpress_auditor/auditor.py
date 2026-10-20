@@ -100,6 +100,10 @@ class Auditor:
         self.payload_cases = 0
         self.discovered_checks = 0
         self.method_checks = 0
+        self.phase_stats = []
+        self.progress_callback = None
+        self.scan_mode = "quick"
+        self.payload_candidates = 0
         self.opener = urllib.request.build_opener(
             _NoRedirect,
             urllib.request.ProxyHandler({"http": proxy, "https": proxy} if proxy else {}),
@@ -245,6 +249,34 @@ class Auditor:
                 self.add("AJAX action " + action, path, status, detail=state, visibility="response-observed")
         return sorted(self.ajax_actions)
 
+    def _phase(self, title, function, enabled=True, reason="not enabled"):
+        """Run a named scan phase and retain actual work/skip reasons."""
+        before_requests = self.request_count
+        before_checks = len(self.results)
+        if not enabled:
+            phase = {"name": title, "requests": 0, "checks": 0,
+                     "state": "skipped", "reason": reason}
+            self.phase_stats.append(phase)
+            return
+        if self.request_count >= self.limit:
+            phase = {"name": title, "requests": 0, "checks": 0,
+                     "state": "skipped", "reason": "request budget exhausted"}
+            self.phase_stats.append(phase)
+            return
+        if self.progress_callback:
+            self.progress_callback("start", title, self)
+        try:
+            function()
+        finally:
+            count = self.request_count - before_requests
+            phase = {"name": title, "requests": count,
+                     "checks": len(self.results) - before_checks,
+                     "state": "done" if count else "no-requests",
+                     "reason": "" if count else "no eligible candidates"}
+            self.phase_stats.append(phase)
+            if self.progress_callback:
+                self.progress_callback("done", title, self, phase)
+
     def discover(
         self, marker=None, post_comment=False, comment_name="Auditor",
         comment_email="auditor@example.invalid", post_id=1, depth=1, full=False,
@@ -252,64 +284,121 @@ class Auditor:
         ajax_probe=False, no_ajax=False,
         payloads=None, payload_limit=30, probe_discovered=True, deep=False,
     ):
-        if post_comment and self.request_count < self.limit:
-            if post_id is None:
-                self.add("opt-in comment POST", "/", None, detail="comment post ID is required",
-                         visibility="not-evaluated")
-            else:
-                self.comment(post_id, marker or ("wp-audit-" + uuid.uuid4().hex), comment_name,
-                             comment_email, mode=comment_mode)
-        if (xmlrpc or full) and self.request_count < self.limit:
-            self.xmlrpc()
-        if full and self.request_count + 3 <= self.limit:
+        self.scan_mode = "deep" if deep else "smart" if full else "quick"
+        self.phase_stats = []
+        if post_comment:
+            self._phase("Explicit comment submission",
+                        lambda: self.comment(
+                            post_id, marker or ("wp-audit-" + uuid.uuid4().hex),
+                            comment_name, comment_email, mode=comment_mode),
+                        enabled=post_id is not None,
+                        reason="valid --comment-post-id required")
+        self._phase("XML-RPC protocol diagnostics", self.xmlrpc,
+                    enabled=xmlrpc or full, reason="requires --xmlrpc or smart/full mode")
+
+        def _access_control():
+            if self.request_count + 3 > self.limit:
+                return
             comparison = self.compare_403("/wp-admin/")
             self.add("403 differential /wp-admin/", "/wp-admin/", comparison["comparison"],
                      detail=comparison["classification"], visibility="requires-review"
                      if "requires review" in comparison["classification"] else "inconclusive")
-        if search_comment and self.request_count < self.limit:
-            self.search_comment(search_comment, languages=languages)
-        paths = [
-            "/wp-json/", "/wp-json/wp/v2/posts?per_page=1", "/wp-json/wp/v2/comments?per_page=1",
-            "/wp-json/wc/v3/products?per_page=1", "/wp-json/wc/v3/reviews?per_page=1",
-            "/?feed=comments-rss2", "/comments/feed/",
-        ]
-        if full or depth > 1:
-            paths += [
-                "/wp-json/wp/v2/", "/wp-json/wp/v2/pages?per_page=1",
-                "/wp-json/wp/v2/users?per_page=1", "/wp-json/wp/v2/types",
-                "/wp-json/wp/v2/taxonomies", "/wp-json/wp/v2/categories?per_page=1",
-                "/wp-json/wp/v2/media?per_page=1", "/wp-json/oembed/1.0/",
-                "/wp-json/wp/v2/settings", "/wp-json/wp/v2/users/me",
-                "/wp-json/wp/v2/plugins", "/?author=1",
-                "/wp-json/wc/store/v1/", "/wp-json/wc/store/v1/products?per_page=1",
-                "/wp-json/wc/v3/orders?per_page=1",
-                "/wp-json/wc/store/v1/products/reviews?per_page=1",
-                "/wp-admin/", "/wp-login.php", "/wp-admin/admin-ajax.php",
-                "/robots.txt", "/wp-sitemap.xml", "/sitemap_index.xml",
-                "/.well-known/security.txt",
+        self._phase("Admin access-control comparison", _access_control, enabled=full,
+                    reason="requires smart/full mode")
+
+        self._phase("Comment/review marker search",
+                    lambda: self.search_comment(search_comment, languages=languages),
+                    enabled=bool(search_comment), reason="no search marker supplied")
+
+        def _core():
+            paths = [
+                "/wp-json/", "/wp-json/wp/v2/posts?per_page=1",
+                "/wp-json/wp/v2/comments?per_page=1",
+                "/wp-json/wc/v3/products?per_page=1",
+                "/wp-json/wc/v3/reviews?per_page=1",
+                "/?feed=comments-rss2", "/comments/feed/",
             ]
-        for path in paths:
-            if self.request_count >= self.limit:
-                break
-            s, b, _ = self.request(path)
-            self.add(path.split("?")[0], path, s, b)
-            if marker and marker.lower().encode() in b.lower():
-                self.results[-1].detail = sanitize_detail(self.results[-1].detail + " marker-found")
-        if not no_ajax and self.request_count < self.limit:
-            self.discover_ajax(probe=ajax_probe,
-                               page_cap=12 if deep else 8 if full else 4,
-                               asset_cap=20 if deep else 12 if full else 8)
-        # All additional probes share the exact same transport, scope, and budget.
+            if full or depth > 1:
+                paths += [
+                    "/wp-json/wp/v2/", "/wp-json/wp/v2/pages?per_page=1",
+                    "/wp-json/wp/v2/users?per_page=1", "/wp-json/wp/v2/types",
+                    "/wp-json/wp/v2/taxonomies", "/wp-json/wp/v2/categories?per_page=1",
+                    "/wp-json/wp/v2/media?per_page=1", "/wp-json/oembed/1.0/",
+                    "/wp-json/wp/v2/settings", "/wp-json/wp/v2/users/me",
+                    "/wp-json/wp/v2/plugins", "/?author=1",
+                    "/wp-json/wc/store/v1/", "/wp-json/wc/store/v1/products?per_page=1",
+                    "/wp-json/wc/v3/orders?per_page=1",
+                    "/wp-json/wc/store/v1/products/reviews?per_page=1",
+                    "/wp-admin/", "/wp-login.php", "/wp-admin/admin-ajax.php",
+                    "/robots.txt", "/wp-sitemap.xml", "/sitemap_index.xml",
+                    "/.well-known/security.txt",
+                ]
+            # Adaptive phase budget: leave room for crawl, methods and payloads.
+            core_cap = len(paths) if not full else min(len(paths), max(6, self.limit // 5))
+            for path in paths[:core_cap]:
+                if self.request_count >= self.limit:
+                    break
+                s, b, _ = self.request(path)
+                self.add(path.split("?")[0], path, s, b)
+                if path == "/wp-json/" and s == 200:
+                    # WP REST root can advertise routes discovered from plugins.
+                    # Only concrete, GET-capable routes without path variables.
+                    try:
+                        index = json.loads(b.decode("utf-8"))
+                    except (ValueError, UnicodeDecodeError):
+                        index = {}
+                    routes = index.get("routes", {}) if isinstance(index, dict) else {}
+                    if isinstance(routes, dict):
+                        from .probes import safe_candidate
+                        for route, info in list(routes.items())[:400]:
+                            if not isinstance(route, str) or not route.startswith("/"):
+                                continue
+                            if any(char in route for char in ("(", ")", "{", "}")):
+                                continue
+                            methods = (info or {}).get("methods", []) if isinstance(info, dict) else []
+                            if "GET" not in methods and "HEAD" not in methods:
+                                continue
+                            candidate = "/wp-json" + route
+                            if safe_candidate(self, candidate):
+                                self._wordlist_url(candidate)
+                if marker and marker.lower().encode() in b.lower():
+                    self.results[-1].detail = sanitize_detail(
+                        self.results[-1].detail + " marker-found")
+        self._phase("WordPress/WooCommerce REST and public surfaces", _core)
+
+        self._phase("HTML/JavaScript crawling and AJAX discovery",
+                    lambda: self.discover_ajax(
+                        probe=ajax_probe,
+                        page_cap=min(30, max(1, depth) *
+                                     (12 if deep else min(8, max(3, self.limit // 12))
+                                      if full else 4)),
+                        asset_cap=20 if deep else 12 if full else 8),
+                    enabled=not no_ajax, reason="disabled by --no-ajax")
         from .probes import ProbeSuite
         suite = ProbeSuite(self, payloads=payloads)
-        if full and self.request_count < self.limit:
-            self.method_checks = suite.method_negotiation(max_cases=12)
-        if probe_discovered and self.request_count < self.limit:
+        self.payload_candidates = len(suite.paths) + len(suite.headers)
+        self._phase("HTTP HEAD/OPTIONS capability checks",
+                    lambda: setattr(self, "method_checks",
+                                    suite.method_negotiation(
+                                        max_cases=min(12, max(2, self.limit // 12)))),
+                    enabled=full, reason="requires smart/full mode")
+
+        # Reserve some traffic for authorization comparisons, then crawl every
+        # eligible discovered URL left within the user-selected request budget.
+        def _discovered():
+            reserved = min(payload_limit + 2, max(0, self.limit // 4))
+            capacity = max(0, self.limit - self.request_count - reserved)
             self.discovered_checks = suite.probe_discovered(
-                max_cases=30 if deep else 16 if full else 8)
-        if self.request_count < self.limit:
-            self.payload_cases = suite.access_variants(
-                max_cases=payload_limit if (deep or full) else min(payload_limit, 6))
+                max_cases=min(300 if deep else 200 if full else 8, capacity))
+        self._phase("New and previously discovered URL verification", _discovered,
+                    enabled=probe_discovered, reason="disabled by --no-probe-discovered")
+
+        self._phase("Path/header payload comparisons",
+                    lambda: setattr(self, "payload_cases",
+                                    suite.access_variants(
+                                        max_cases=payload_limit if (deep or full)
+                                        else min(payload_limit, 6))),
+                    enabled=payload_limit > 0, reason="--payload-limit 0")
         return self.results
 
     @staticmethod

@@ -20,21 +20,30 @@ wordpress-auditor --help
 ## Basic usage
 
 ```sh
-# Default: compact terminal summary, passive checks, no comment writes
-wordpress-auditor --url https://example.invalid --max-requests 30
+# Smart audit by default, showing phases and a human-readable explanation.
+# Includes limited read-only XML-RPC POST diagnostic calls.
+wordpress-auditor --url https://example.invalid
 
-# Broader coverage: REST permissions, WooCommerce, XML-RPC faults,
-# admin access differential, sitemap, robots and AJAX discovery
-wordpress-auditor --url https://example.invalid --full --max-requests 60
+# Optional quick mode, without XML-RPC method introspection
+wordpress-auditor --url https://example.invalid --quick
 
-# Save full evidence to a file without filling the console with JSON
-wordpress-auditor --url https://example.invalid --full --output ./audit/report.json
+# Stream engine phases while executing
+wordpress-auditor --url https://example.invalid --progress
+
+# Print every individual endpoint check
+wordpress-auditor --url https://example.invalid --verbose
+
+# Explicit smart mode (identical to the default)
+wordpress-auditor --url https://example.invalid --full
+
+# Save all evidence and a concise explanation without JSON output to console
+wordpress-auditor --url https://example.invalid --output ./audit/report.json
 
 # Explicit detailed stdout (JSON/CSV/Markdown)
 wordpress-auditor --url https://example.invalid --format json
 # Automated bounded payload tests: paths, read-only method negotiation,
 # conditional 401/403 header variations, and discovered URL rechecks.
-wordpress-auditor --url https://example.invalid --full --max-requests 160 \
+wordpress-auditor --url https://example.invalid --full --max-requests 180 \
   --output ./audit/report.json
 
 # Deeper GET/header payload audit with imported prior Burp Intruder ZIP.
@@ -68,6 +77,26 @@ wordpress-auditor --url https://example.invalid --ajax-probe --wordlist-out ./au
 wordpress-auditor --url https://example.invalid --post-comment --comment-post-id 42 --comment-mode form --marker 'unique-marker'
 ```
 
+## What happens during a normal scan?
+
+The default scan is now smart rather than the old limited quick mode. The CLI
+explains each module and actual HTTP request/check counts: XML-RPC,
+administrator access controls, WP/Woo REST, HTML/JS crawling, AJAX action
+discovery, HEAD/OPTIONS capability tests, GET verification of discovered
+routes, and differential path/header payload checks.
+
+Results are stored in the ignored local audit/ directory:
+- scan-summary.md: human-readable description of phases and observations
+- latest-report.json: every individual request/check result
+- wordlist.txt and ajax-actions.txt: reusable, deduplicated discoveries
+
+The engine spends unused request budget on newly discovered in-scope GET
+routes rather than stopping after eight URL checks. It also discovers
+concrete GET-capable paths directly from the REST route index, avoiding
+variable, cart, checkout and payment paths. A 200 status does not prove
+privileged access. A 401/403 status usually means access control.
+An automated scan cannot guarantee discovery of every vulnerability.
+
 The default console view is a short, factual summary, not a JSON array.
 Use --format json, --format csv, or --format md for detailed stdout.
 Using --output report.json writes detailed findings to that file and keeps
@@ -78,7 +107,7 @@ XML-RPC protocol diagnostics. Those diagnostics use several small POST
 requests, but only for read-only introspection and malformed-method
 error responses: no login, pingback, multicall, brute-force, or DoS.
 Both --full and --xmlrpc consume the global request budget.
-Rate limit with --delay (default 0.2s) and --max-requests (default 60).
+Rate limit with --delay (default 0.2s) and --max-requests (default 180 for smart mode).
 A response code of 200, 302 or 401 alone is not proof of a vulnerability.
 
 HTTP responses are not vulnerabilities. `401/403` indicate access controls;
@@ -113,8 +142,8 @@ unsafe or out-of-scope candidates are filtered. Write-capable HTTP methods
 and comment/XSS payloads are never fired automatically. --post-comment is
 explicit for one harmless marker. No brute force or DoS.
 
---max-requests and --delay control load. Default: 60 requests.
---full: 160. --deep: 350. All modules share the global request limit.
+--max-requests and --delay control load. --quick defaults to 60.
+Normal smart mode (including --full) defaults to 180. --deep defaults to 350. All modules share the global request limit.
 --no-probe-discovered saves URLs without requesting them. --no-ajax disables
 action discovery. Header spoofing tests never include session cookies.
 Same-origin checks and no-redirect transport prevent off-origin crawling.

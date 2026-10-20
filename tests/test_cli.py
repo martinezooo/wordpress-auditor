@@ -182,7 +182,8 @@ class TestAuditor(unittest.TestCase):
         a.search_comment("LokalnyZnak123")
         self.assertTrue(any(x.visibility == "found" and "/wp/v2/comments" in x.url for x in a.results))
         self.assertTrue(any(x.visibility == "found" and "/store/v1/products/reviews" in x.url for x in a.results))
-        self.assertFalse(any(r[0] == "POST" for r in Fixture.requests))
+        self.assertFalse(any(r[0] == "POST" and r[1] != "/xmlrpc.php"
+                             for r in Fixture.requests))
 
     def test_xmlrpc_fault_codes(self):
         raw = (b"<methodResponse><fault><value><struct><member>"
@@ -270,7 +271,8 @@ class TestAuditor(unittest.TestCase):
         Fixture.requests.clear()
         with contextlib.redirect_stdout(io.StringIO()):
             main(["--url", self.url, "--max-requests", "2"])
-        self.assertFalse(any(r[0] == "POST" for r in Fixture.requests))
+        self.assertFalse(any(r[0] == "POST" and r[1] != "/xmlrpc.php"
+                             for r in Fixture.requests))
 
     def test_summary_is_default_and_no_json_dump(self):
         out = io.StringIO()
@@ -280,7 +282,8 @@ class TestAuditor(unittest.TestCase):
         self.assertIn("Requests 3/3", value)
         self.assertIn("AJAX actions", value)
         self.assertNotIn('"name":', value)
-        self.assertLess(len(value.splitlines()), 10)
+        self.assertIn("WHAT THE ENGINE ACTUALLY DID", value)
+        self.assertIn("COVERAGE & LIMITATIONS", value)
 
     def test_explicit_json_details(self):
         out = io.StringIO()
@@ -306,7 +309,7 @@ class TestAuditor(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(tmp, "nested", "wordlist.txt")))
 
     def test_full_scans_more_surface_and_read_only_xmlrpc(self):
-        a = Auditor(self.url, limit=55)
+        a = Auditor(self.url, limit=180)
         a.discover(full=True)
         observed = [urlsplit(row[1]).path for row in Fixture.requests]
         for endpoint in ("/wp-json/wp/v2/users", "/wp-json/oembed/1.0/",
