@@ -51,9 +51,15 @@ def sanitize_detail(value: str) -> str:
 
 
 def safe_url(base: str, target: str) -> str:
+    # RFC 3986 urljoin() canonicalizes literal /../ and /./ segments. Preserve
+    # exactly those bytes when testing web-server route normalization behavior.
+    if target.startswith("/") and not target.startswith("//"):
+        origin = urllib.parse.urlsplit(base)
+        raw = urllib.parse.urlsplit(target)
+        return urllib.parse.urlunsplit(
+            (origin.scheme, origin.netloc, raw.path or "/", raw.query, ""))
     joined = urllib.parse.urljoin(base.rstrip("/") + "/", target)
     p = urllib.parse.urlsplit(joined)
-    # Do not decode/re-encode paths: encoded separators are security-significant.
     return urllib.parse.urlunsplit((p.scheme, p.netloc, p.path or "/", p.query, ""))
 
 
@@ -90,6 +96,10 @@ class Auditor:
         self.request_count = 0
         self.ajax_actions = set()
         self.wordlist = set()
+        self.requested_urls = set()
+        self.payload_cases = 0
+        self.discovered_checks = 0
+        self.method_checks = 0
         self.opener = urllib.request.build_opener(
             _NoRedirect,
             urllib.request.ProxyHandler({"http": proxy, "https": proxy} if proxy else {}),
@@ -101,18 +111,23 @@ class Auditor:
             p.scheme.lower(), p.hostname.lower() if p.hostname else "", p.port or (443 if p.scheme == "https" else 80)
         ) == self.origin and p.scheme.lower() == self.origin[0]
 
-    def request(self, path, method="GET", data=None, headers=None, include_credentials=None):
+    def request(self, path, method="GET", data=None, headers=None,
+                include_credentials=None, test_headers=False):
         if self.request_count >= self.limit:
             return None, b"", {"error": "request budget exhausted"}
         url = safe_url(self.base, path)
         if not self._allowed(url):
             raise ValueError("refusing cross-origin or scheme-changing request")
         self.request_count += 1
+        self.requested_urls.add(report_url(url))
         if self.delay:
             time.sleep(self.delay)
         req_headers = {**self.headers, **(headers or {})}
         req_headers = {k: v for k, v in req_headers.items()
-                       if k.lower() not in HOP_HEADERS and not k.lower().startswith("x-forwarded-")}
+                       if k.lower() not in HOP_HEADERS and
+                       (not k.lower().startswith("x-forwarded-")
+                        or (test_headers and k.lower() in
+                            {"x-forwarded-for", "x-forwarded-uri"}))}
         # Credentials are only sent when explicitly authorized.
         if include_credentials is False or not self.authorized:
             req_headers = {k: v for k, v in req_headers.items()
@@ -235,6 +250,7 @@ class Auditor:
         comment_email="auditor@example.invalid", post_id=1, depth=1, full=False,
         xmlrpc=False, search_comment=None, comment_mode="rest", languages=None,
         ajax_probe=False, no_ajax=False,
+        payloads=None, payload_limit=30, probe_discovered=True, deep=False,
     ):
         if post_comment and self.request_count < self.limit:
             if post_id is None:
@@ -280,7 +296,20 @@ class Auditor:
             if marker and marker.lower().encode() in b.lower():
                 self.results[-1].detail = sanitize_detail(self.results[-1].detail + " marker-found")
         if not no_ajax and self.request_count < self.limit:
-            self.discover_ajax(probe=ajax_probe)
+            self.discover_ajax(probe=ajax_probe,
+                               page_cap=12 if deep else 8 if full else 4,
+                               asset_cap=20 if deep else 12 if full else 8)
+        # All additional probes share the exact same transport, scope, and budget.
+        from .probes import ProbeSuite
+        suite = ProbeSuite(self, payloads=payloads)
+        if full and self.request_count < self.limit:
+            self.method_checks = suite.method_negotiation(max_cases=12)
+        if probe_discovered and self.request_count < self.limit:
+            self.discovered_checks = suite.probe_discovered(
+                max_cases=30 if deep else 16 if full else 8)
+        if self.request_count < self.limit:
+            self.payload_cases = suite.access_variants(
+                max_cases=payload_limit if (deep or full) else min(payload_limit, 6))
         return self.results
 
     @staticmethod

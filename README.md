@@ -32,6 +32,28 @@ wordpress-auditor --url https://example.invalid --full --output ./audit/report.j
 
 # Explicit detailed stdout (JSON/CSV/Markdown)
 wordpress-auditor --url https://example.invalid --format json
+# Automated bounded payload tests: paths, read-only method negotiation,
+# conditional 401/403 header variations, and discovered URL rechecks.
+wordpress-auditor --url https://example.invalid --full --max-requests 160 \
+  --output ./audit/report.json
+
+# Deeper GET/header payload audit with imported prior Burp Intruder ZIP.
+wordpress-auditor --url https://example.invalid --deep \
+  --payloads ~/Downloads/wp_intruder_expanded.zip \
+  --payload-limit 160 --max-requests 350 \
+  --output ./audit/deep.json
+
+# Narrow a scan to a supplied HTTP request context plus known cookies.
+wordpress-auditor --request request.txt --authorized --full \
+  --output ./audit/authenticated.json
+
+# Optional OAST SSRF: one explicit request to an in-scope endpoint.
+# It cannot confirm SSRF without a separate Collaborator callback.
+wordpress-auditor --url https://example.invalid --ssrf \
+  --collaborator-url https://your-id.oast.invalid/callback \
+  --ssrf-path /wp-admin/admin-ajax.php --ssrf-action preview_url \
+  --ssrf-param url --ssrf-method GET --max-requests 60
+
 # Import raw Burp HTTP/1.1 request as base URL and headers; does not replay it
 wordpress-auditor --request request.txt --authorized
 # Search for a marker in comments/reviews, feeds and multilingual HTML
@@ -77,6 +99,30 @@ beside it. `--ajax-probe` is required to call observed actions with bounded GET
 requests; responses are reported as requiring review, not as authentication
 bypasses. `--no-ajax` disables discovery. No off-origin requests, cookies in
 unauthenticated comparisons, POST action probes, or redirects are used.
+
+## Automated verification model
+
+This auditor performs bounded response comparisons, not only endpoint listing.
+Normal scans discover AJAX actions and URLs, keep them in audit/wordlist.txt
+and audit/ajax-actions.txt, and recheck prior same-origin discoveries.
+--full probes additional WP/WooCommerce REST endpoints, XML-RPC introspection,
+HTTP HEAD/OPTIONS, and path/header variations. --deep increases request budget
+and can use the complete previously generated Burp Intruder payload package.
+--payloads accepts 01_headers.txt and 02_urls.txt in either ZIP or folder form;
+unsafe or out-of-scope candidates are filtered. Write-capable HTTP methods
+and comment/XSS payloads are never fired automatically. --post-comment is
+explicit for one harmless marker. No brute force or DoS.
+
+--max-requests and --delay control load. Default: 60 requests.
+--full: 160. --deep: 350. All modules share the global request limit.
+--no-probe-discovered saves URLs without requesting them. --no-ajax disables
+action discovery. Header spoofing tests never include session cookies.
+Same-origin checks and no-redirect transport prevent off-origin crawling.
+
+Interpretation: a response difference means requires-review, NOT a proven
+privilege bypass. Login pages and soft-404s can cause false positives.
+SSRF requires a separately confirmed Collaborator callback; HTTP 200 is
+not proof. This tool complements Burp, manual role testing, and Nuclei.
 
 ## Offline tests and shareable log (macOS)
 

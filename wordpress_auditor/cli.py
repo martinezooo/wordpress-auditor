@@ -6,7 +6,10 @@ import os
 from collections import Counter
 from urllib.parse import urlsplit
 
+from .probes import safe_candidate
+
 from .auditor import Auditor, parse_burp, report_url
+from .probes import ssrf_oast_probe
 
 
 def summarize(auditor, rows, verbose=False):
@@ -17,16 +20,22 @@ def summarize(auditor, rows, verbose=False):
         "WordPress Auditor | " + report_url(auditor.base),
         "Requests %d/%d | Checks %d | URLs %d | AJAX actions %d" %
         (auditor.request_count, auditor.limit, len(rows), len(auditor.wordlist), len(auditor.ajax_actions)),
+        "Payload variants %d | Method checks %d | Discovered-URL checks %d" %
+        (auditor.payload_cases, auditor.method_checks, auditor.discovered_checks),
         "HTTP status: " + http,
     ]
     xmlrpc = [r for r in rows if r["name"].startswith("XML-RPC")]
     if xmlrpc:
         lines.append("XML-RPC: %d diagnostic responses; see --format json for details" % len(xmlrpc))
     notable = [r for r in rows if (
-        (r["status"] is not None and r["status"] >= 500)
+        (r["status"] is not None and r["status"] >= 500
+         and not (r["status"] == 501 and r["name"].startswith("HTTP method ")
+                  and "method-not-supported" in r["detail"]))
         or "requires-review" in r["detail"]
         or r["visibility"] in ("confirmed-public", "confirmed-authenticated")
     )]
+    if any(r["name"] == "opt-in SSRF OAST injection" for r in rows):
+        lines.append("SSRF/OAST: 1 injection attempted; check Collaborator for a callback.")
     if notable:
         lines.append("Needs review (%d):" % len(notable))
         for r in notable[:5]:
@@ -80,9 +89,24 @@ def main(argv=None):
     p.add_argument("--search-comment", metavar="TEXT",
                    help="search this literal term in public comment/review sources")
     p.add_argument("--delay", type=float, default=0.2)
-    p.add_argument("--max-requests", type=int, default=60)
+    p.add_argument("--max-requests", type=int, default=None)
     p.add_argument("--depth", type=int, default=1)
-    p.add_argument("--full", action="store_true")
+    p.add_argument("--full", action="store_true", help="more REST, XML-RPC and payload controls")
+    p.add_argument("--deep", action="store_true",
+                   help="larger in-scope GET/header payload suite (implies --full)")
+    p.add_argument("--payloads", metavar="ZIP_OR_DIR",
+                   help="import the previous Burp Intruder 01_headers / 02_urls wordlists")
+    p.add_argument("--payload-limit", type=int, default=None,
+                   help="max path/header variants in one scan")
+    p.add_argument("--no-probe-discovered", action="store_true",
+                   help="record but do not automatically GET discovered URLs")
+    p.add_argument("--ssrf", action="store_true",
+                   help="send ONE explicit OAST injection to a chosen in-scope endpoint")
+    p.add_argument("--collaborator-url", help="external HTTPS callback URL in your Collaborator")
+    p.add_argument("--ssrf-path", help="explicit in-scope path to test for URL fetching")
+    p.add_argument("--ssrf-param", help="parameter on endpoint which accepts a URL")
+    p.add_argument("--ssrf-action", help="optional WordPress AJAX action name")
+    p.add_argument("--ssrf-method", choices=("GET", "POST"), default="GET")
     p.add_argument("--xmlrpc", action="store_true")
     p.add_argument("--ajax-probe", action="store_true")
     p.add_argument("--no-ajax", action="store_true")
@@ -91,8 +115,20 @@ def main(argv=None):
     p.add_argument("--verbose", action="store_true", help="show each checked endpoint")
     p.add_argument("--output", "--out", help="save report (extension .json, .csv, .md)")
     a = p.parse_args(argv)
+    if a.deep:
+        a.full = True
+    if a.max_requests is None:
+        a.max_requests = 350 if a.deep else 160 if a.full else 60
+    if a.payload_limit is None:
+        a.payload_limit = 160 if a.deep else 36 if a.full else 6
     if a.max_requests < 1 or a.delay < 0 or a.timeout <= 0:
         p.error("--max-requests must be positive, --delay nonnegative, --timeout positive")
+    if not 0 <= a.payload_limit <= 1000:
+        p.error("--payload-limit must be between 0 and 1000")
+    if a.ssrf and not (a.collaborator_url and a.ssrf_path and a.ssrf_param):
+        p.error("--ssrf requires --collaborator-url, --ssrf-path, and --ssrf-param")
+    if not a.ssrf and any((a.collaborator_url, a.ssrf_path, a.ssrf_param, a.ssrf_action)):
+        p.error("SSRF-specific flags require --ssrf")
     if a.post_comment and (a.comment_post_id is None or a.comment_post_id < 1):
         p.error("--post-comment requires a positive --comment-post-id")
     headers = {}
@@ -109,25 +145,53 @@ def main(argv=None):
         url = a.url
     auditor = Auditor(url, headers, a.cookie, a.proxy, limit=a.max_requests, delay=a.delay, timeout=a.timeout,
                       authorized=a.authorized, scheme=a.scheme)
+    if a.payloads:
+        # Validate local payload input before contacting any target.
+        from .probes import get_payloads
+        get_payloads(auditor, a.payloads)
+    wordlist_out = a.wordlist_out
+    if not wordlist_out:
+        directory = os.path.dirname(os.path.abspath(a.output)) if a.output else os.path.abspath("audit")
+        wordlist_out = os.path.join(directory, "wordlist.txt")
+    if os.path.isfile(wordlist_out):
+        # Merge previous in-scope discoveries so the next scan rechecks them.
+        with open(wordlist_out, encoding="utf-8", errors="replace") as old:
+            for idx, entry in enumerate(old):
+                if idx >= 5000:
+                    break
+                entry = entry.strip()
+                if len(entry) > 500 or not auditor._allowed(entry):
+                    continue
+                parsed = urlsplit(entry)
+                if safe_candidate(auditor, parsed.path):
+                    auditor._wordlist_url(parsed.path)
+    if a.ssrf:
+        # Prioritize explicitly requested, single OAST injection under the shared budget.
+        ssrf_oast_probe(auditor, a.ssrf_path, a.ssrf_param,
+                        a.collaborator_url, method=a.ssrf_method, action=a.ssrf_action)
     results = auditor.discover(a.marker, a.post_comment, post_id=a.comment_post_id,
                                depth=a.depth, full=a.full, xmlrpc=a.xmlrpc,
                                search_comment=a.search_comment or a.marker,
                                languages=a.languages.split(",") if a.languages else None,
                                comment_mode=a.comment_mode, comment_name=a.comment_author,
                                comment_email=a.comment_email, ajax_probe=a.ajax_probe,
-                               no_ajax=a.no_ajax)
-    wordlist_out = a.wordlist_out
-    if not wordlist_out and a.output:
-        wordlist_out = os.path.join(os.path.dirname(os.path.abspath(a.output)), "wordlist.txt")
-    if wordlist_out:
-        os.makedirs(os.path.dirname(os.path.abspath(wordlist_out)), exist_ok=True)
-        with open(wordlist_out, "w", encoding="utf-8") as f:
-            f.write("".join(url + "\n" for url in sorted(auditor.wordlist)))
-        with open(os.path.join(os.path.dirname(os.path.abspath(wordlist_out)), "ajax-actions.txt"),
-                  "w", encoding="utf-8") as f:
-            f.write("".join(action + "\n" for action in sorted(auditor.ajax_actions)))
+                               no_ajax=a.no_ajax, payloads=a.payloads,
+                               payload_limit=a.payload_limit,
+                               probe_discovered=not a.no_probe_discovered, deep=a.deep)
+    os.makedirs(os.path.dirname(os.path.abspath(wordlist_out)), exist_ok=True)
+    with open(wordlist_out, "w", encoding="utf-8") as f:
+        f.write("".join(url + "\n" for url in sorted(auditor.wordlist)))
+    actions_path = os.path.join(os.path.dirname(os.path.abspath(wordlist_out)), "ajax-actions.txt")
+    old_actions = set()
+    if os.path.isfile(actions_path):
+        import re
+        with open(actions_path, encoding="utf-8", errors="replace") as f:
+            old_actions = {x.strip() for x in f if re.fullmatch(r"[A-Za-z0-9_-]{1,80}", x.strip())}
+    with open(actions_path, "w", encoding="utf-8") as f:
+        f.write("".join(action + "\n" for action in sorted(auditor.ajax_actions | old_actions)))
     rows = [r.__dict__ for r in results]
     summary = summarize(auditor, rows, verbose=a.verbose)
+    summary += "\nWordlist: " + wordlist_out
     if a.output:
         ext = os.path.splitext(a.output)[1].lower()
         output_fmt = a.format if a.format != "summary" else {
