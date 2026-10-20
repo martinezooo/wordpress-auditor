@@ -2,6 +2,7 @@ import argparse
 import csv
 import io
 import json
+import os
 
 from .auditor import Auditor, parse_burp
 
@@ -31,6 +32,9 @@ def main(argv=None):
     p.add_argument("--depth", type=int, default=1)
     p.add_argument("--full", action="store_true")
     p.add_argument("--xmlrpc", action="store_true")
+    p.add_argument("--ajax-probe", action="store_true")
+    p.add_argument("--no-ajax", action="store_true")
+    p.add_argument("--wordlist-out")
     p.add_argument("--format", choices=("json", "csv", "md"), default="json")
     p.add_argument("--output")
     a = p.parse_args(argv)
@@ -57,7 +61,18 @@ def main(argv=None):
                                search_comment=a.search_comment or a.marker,
                                languages=a.languages.split(",") if a.languages else None,
                                comment_mode=a.comment_mode, comment_name=a.comment_author,
-                               comment_email=a.comment_email)
+                               comment_email=a.comment_email, ajax_probe=a.ajax_probe,
+                               no_ajax=a.no_ajax)
+    wordlist_out = a.wordlist_out
+    if not wordlist_out and a.output:
+        wordlist_out = os.path.join(os.path.dirname(os.path.abspath(a.output)), "wordlist.txt")
+    if wordlist_out:
+        os.makedirs(os.path.dirname(os.path.abspath(wordlist_out)), exist_ok=True)
+        with open(wordlist_out, "w", encoding="utf-8") as f:
+            f.write("".join(url + "\n" for url in sorted(auditor.wordlist)))
+        with open(os.path.join(os.path.dirname(os.path.abspath(wordlist_out)), "ajax-actions.txt"),
+                  "w", encoding="utf-8") as f:
+            f.write("".join(action + "\n" for action in sorted(auditor.ajax_actions)))
     rows = [r.__dict__ for r in results]
     if a.format == "json":
         out = json.dumps(rows, indent=2)

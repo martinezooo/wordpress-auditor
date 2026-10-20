@@ -23,6 +23,11 @@ HOP_HEADERS = {
     "accept-encoding", "proxy-authorization", "expect", "set-cookie",
     "proxy-connection", "keep-alive", "upgrade", "te", "trailer",
 }
+ACTION_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+ACTION_PATTERNS = (
+    re.compile(r"""(?:action|data-action)\s*[:=]\s*['"]([A-Za-z0-9_-]{1,80})['"]""", re.I),
+    re.compile(r"""(?:action|data-action)\s*=\s*['"]([A-Za-z0-9_-]{1,80})['"]""", re.I),
+)
 
 
 @dataclass
@@ -83,6 +88,8 @@ class Auditor:
         self.authorized = bool(authorized)
         self.results = []
         self.request_count = 0
+        self.ajax_actions = set()
+        self.wordlist = set()
         self.opener = urllib.request.build_opener(
             _NoRedirect,
             urllib.request.ProxyHandler({"http": proxy, "https": proxy} if proxy else {}),
@@ -139,10 +146,95 @@ class Auditor:
         snippet = sanitize_detail(detail)
         self.results.append(Result(name, report_url(safe_url(self.base, path)), status, visibility or "unavailable", snippet))
 
+    def _wordlist_url(self, url):
+        if self._allowed(url):
+            self.wordlist.add(report_url(safe_url(self.base, url)))
+
+    @staticmethod
+    def extract_ajax_actions(text):
+        actions = set()
+        contextual = bool(re.search(r"\b(?:admin-ajax|ajaxurl|wp_ajax|wpApiSettings)\b", text, re.I))
+        for pattern in ACTION_PATTERNS:
+            for match in pattern.finditer(text):
+                if "data-action" in match.group(0).lower() or contextual:
+                    actions.add(match.group(1))
+        if contextual:
+            actions.update(re.findall(r"""\baction\s*=\s*['"]([A-Za-z0-9_-]{1,80})['"]""", text, re.I))
+        return {a for a in actions if ACTION_RE.fullmatch(a)}
+
+    @staticmethod
+    def _is_login_or_nonce(body):
+        return bool(re.search(rb"wp-login|loginform|name=['\"]log['\"]|nonce|_wpnonce", body, re.I))
+
+    def discover_ajax(self, probe=False, page_cap=4, asset_cap=8):
+        pending, pages, assets = ["/"], set(), set()
+        while pending and len(pages) < page_cap and self.request_count < self.limit:
+            path = pending.pop(0)
+            if path in pages or not self._allowed(path):
+                continue
+            pages.add(path)
+            status, body, _ = self.request(path)
+            if status != 200:
+                continue
+            text = body.decode("utf-8", "ignore")
+            self._wordlist_url(path)
+            self.ajax_actions.update(self.extract_ajax_actions(text))
+            for raw in re.findall(r"""(?:href|src|action)\s*=\s*['"]([^'"]+)['"]""", text, re.I):
+                target = safe_url(self.base, html.unescape(raw))
+                if not self._allowed(target):
+                    continue
+                parsed = urllib.parse.urlsplit(target)
+                clean = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", "", ""))
+                self._wordlist_url(clean)
+                if parsed.path.endswith(".js") and len(assets) < asset_cap:
+                    assets.add(clean)
+                elif not parsed.path.rsplit("/", 1)[-1].count(".") and len(pending) < page_cap:
+                    pending.append(clean)
+            for raw in re.findall(r"""<input[^>]+name\s*=\s*['"]action['"][^>]+value\s*=\s*['"]([^'"]+)['"]""", text, re.I):
+                if ACTION_RE.fullmatch(raw) and re.search(r"admin-ajax|ajaxurl|wp_ajax", text, re.I):
+                    self.ajax_actions.add(raw)
+            for raw in re.findall(r"""(?:data-action|action)\s*=\s*['"]([A-Za-z0-9_-]{1,80})['"]""", text, re.I):
+                if re.search(r"admin-ajax|ajaxurl|wp_ajax|data-action", text, re.I):
+                    self.ajax_actions.add(raw)
+            for raw in re.findall(r"""<(?:loc|url)\b[^>]*>([^<]+)""", text, re.I):
+                target = safe_url(self.base, html.unescape(raw.strip()))
+                if self._allowed(target):
+                    self._wordlist_url(target)
+            for extra in ("/wp-json/", "/wp-sitemap.xml", "/sitemap.xml"):
+                if len(pages) < page_cap and extra not in pages and extra not in pending:
+                    pending.append(extra)
+        for asset in list(assets):
+            if self.request_count >= self.limit:
+                break
+            status, body, _ = self.request(asset)
+            if status == 200:
+                self.ajax_actions.update(self.extract_ajax_actions(body.decode("utf-8", "ignore")))
+                self._wordlist_url(asset)
+        endpoint = "/wp-admin/admin-ajax.php"
+        if probe and self.ajax_actions and self.request_count < self.limit:
+            baseline_status, baseline, _ = self.request(endpoint)
+            for action in sorted(self.ajax_actions):
+                if self.request_count >= self.limit:
+                    break
+                path = endpoint + "?action=" + urllib.parse.quote(action, safe="")
+                status, body, _ = self.request(path, include_credentials=False)
+                self._wordlist_url(endpoint)
+                if status in (401, 403) or self._is_login_or_nonce(body):
+                    state = "auth-required/requires-review"
+                elif status == baseline_status and hashlib.sha256(body).digest() == hashlib.sha256(baseline).digest():
+                    state = "response-observed (baseline-equivalent)"
+                elif status in (301, 302, 303, 307, 308):
+                    state = "redirect/requires-review"
+                else:
+                    state = "response-observed/requires-review"
+                self.add("AJAX action " + action, path, status, detail=state, visibility="response-observed")
+        return sorted(self.ajax_actions)
+
     def discover(
         self, marker=None, post_comment=False, comment_name="Auditor",
         comment_email="auditor@example.invalid", post_id=1, depth=1, full=False,
         xmlrpc=False, search_comment=None, comment_mode="rest", languages=None,
+        ajax_probe=False, no_ajax=False,
     ):
         if post_comment and self.request_count < self.limit:
             if post_id is None:
@@ -169,6 +261,8 @@ class Auditor:
             self.add(path.split("?")[0], path, s, b)
             if marker and marker.lower().encode() in b.lower():
                 self.results[-1].detail = sanitize_detail(self.results[-1].detail + " marker-found")
+        if not no_ajax and self.request_count < self.limit:
+            self.discover_ajax(probe=ajax_probe)
         return self.results
 
     @staticmethod

@@ -32,7 +32,25 @@ class Fixture(BaseHTTPRequestHandler):
     def do_GET(self):
         self.track("GET")
         path = urlsplit(self.path).path
-        if path == "/redirect":
+        if path == "/":
+            self.reply(200, b'''<html><script src="/assets/app.js"></script>
+              <form action="/wp-admin/admin-ajax.php"><input type="hidden" name="action" value="form_lookup"></form>
+              <div data-action="inline_lookup"></div><a href="/local-page?token=omit">page</a></html>''')
+        elif path == "/local-page":
+            self.reply(200, b'<script>var ajaxurl="/wp-admin/admin-ajax.php"; jQuery.post(ajaxurl,{action:"page_lookup"});</script>')
+        elif path == "/assets/app.js":
+            self.reply(200, b'const endpoint="/wp-admin/admin-ajax.php"; fetch(endpoint,{action: "asset_lookup"});')
+        elif path in ("/wp-json/", "/wp-sitemap.xml", "/sitemap.xml"):
+            self.reply(200, b'<url><loc>/from-index?secret=omit</loc></url>')
+        elif path == "/wp-admin/admin-ajax.php":
+            query = parse_qs(urlsplit(self.path).query)
+            if query.get("action") == ["login_lookup"]:
+                self.reply(200, b'<form id="loginform">Log in</form>')
+            elif query.get("action"):
+                self.reply(200, ("handled-" + query["action"][0]).encode())
+            else:
+                self.reply(200, b"baseline")
+        elif path == "/redirect":
             self.reply(302, headers={"Location": "http://evil.invalid/leak"})
         elif path == "/xmlrpc.php":
             self.reply(405)
@@ -244,6 +262,25 @@ class TestAuditor(unittest.TestCase):
             with contextlib.redirect_stderr(io.StringIO()):
                 main(["--url", self.url, "--post-comment"])
         self.assertEqual(cm.exception.code, 2)
+
+    def test_ajax_extraction_and_persistent_wordlists(self):
+        a = Auditor(self.url, limit=12)
+        a.discover_ajax()
+        self.assertTrue({"form_lookup", "inline_lookup", "page_lookup", "asset_lookup"} <= a.ajax_actions)
+        self.assertIn(self.url + "/from-index", a.wordlist)
+        self.assertNotIn("secret=omit", "\n".join(a.wordlist))
+        self.assertFalse(any("admin-ajax.php?action=" in r[1] for r in a.results))
+
+    def test_ajax_probe_is_opt_in_and_classifies_login(self):
+        a = Auditor(self.url, limit=12)
+        a.discover_ajax(probe=True)
+        ajax_requests = [r[1] for r in Fixture.requests if "admin-ajax.php?action=" in r[1]]
+        self.assertTrue(ajax_requests)
+        self.assertTrue(all(r[0] == "GET" for r in Fixture.requests))
+        self.assertTrue(any("requires-review" in x.detail for x in a.results))
+
+    def test_ajax_extraction_rejects_unrelated_action(self):
+        self.assertEqual(Auditor.extract_ajax_actions('<form action="login"></form>'), set())
 
 
 if __name__ == "__main__":
