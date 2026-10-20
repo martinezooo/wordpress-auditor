@@ -10,3 +10,14 @@ wordlist.txt
 ajax-actions.txt
 request.txt
 *.burp
+
+# Burp role-session exports contain authentication secrets
+role-*.txt
+*session*.txt
+url-queue.json
+coverage.json
+coverage.md
+scan-summary.md
+latest-report.json
+test-account.json
+authenticated.json

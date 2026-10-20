@@ -6,12 +6,19 @@ VERIFIED = {
     "confirmed-public-config-backup": ("HIGH", "confirmed"),
     "confirmed-public-debug-log": ("MEDIUM", "confirmed"),
     "confirmed-public-directory-listing": ("LOW", "confirmed"),
+    "confirmed-public-user-private-fields": ("MEDIUM", "confirmed"),
+    "confirmed-public-current-user": ("HIGH", "confirmed"),
+    "confirmed-public-app-password-metadata": ("MEDIUM", "confirmed"),
+    "confirmed-public-env-config": ("HIGH", "confirmed"),
+    "confirmed-public-git-metadata": ("MEDIUM", "confirmed"),
 }
 
 def assess(name: str, status: int | None, visibility: str, detail: str):
     """Classify a test result without confusing access status with vulnerability."""
     if visibility in VERIFIED and status == 200:
         return VERIFIED[visibility]
+    if visibility.startswith("review-"):
+        return "REVIEW", "unverified"
     if visibility == "requires-oast-correlation":
         return "REVIEW", "unverified"
     if visibility in ("confirmed-public", "confirmed-authenticated"):

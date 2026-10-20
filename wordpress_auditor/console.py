@@ -46,7 +46,7 @@ def color_summary(text, enabled):
                                  colored)
             output.append(colored)
             continue
-        if line.startswith(("WORDPRESS AUDITOR", "WHAT THE ENGINE",
+        if line.startswith(("WORDPRESS AUDITOR", "WHAT THE ENGINE", "WORDPRESS TECHNIQUE",
                              "OBSERVATIONS", "FOLLOW-UP", "COVERAGE", "FINDINGS")):
             output.append("\033[1m" + line + RESET)
             continue
@@ -105,7 +105,20 @@ class LivePrinter:
     def finding(self, auditor, result):
         label = result.severity
         if label == "INFO" and not self.verbose:
-            return
+            # Show meaningful WP discovery and authentication outcomes live,
+            # but do not flood the console with all ordinary 200/401/403s.
+            significant = (
+                result.name.startswith("WP users public REST listing") and
+                result.visibility == "public-author-info"
+                or result.name.startswith("WP author archive ID") and
+                result.visibility == "public-author-info"
+                or result.name.startswith("WP REST authenticated identity")
+                or result.name.startswith("WP single test-account login")
+                or result.name.startswith("WP XML-RPC test-account authentication")
+                or result.name == "XML-RPC system.listMethods"
+            )
+            if not significant:
+                return
         key = (label, result.name, result.url, result.detail)
         if key in self._seen:
             return

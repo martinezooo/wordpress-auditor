@@ -73,18 +73,26 @@ def observations(auditor, rows):
 
 def format_terminal(auditor, rows, verbose=False, target=None):
     target = report_url(target or auditor.base)
-    states = Counter(str(r["status"]) if r["status"] is not None else "ERR" for r in rows)
-    unique_verified = auditor.wordlist & auditor.requested_urls
+    states = Counter(
+        str(r["status"]) if r["status"] is not None
+        else "PASSIVE" if r["name"] in ("WP plugin asset discovery",
+                                        "WP theme asset discovery") else "ERR"
+        for r in rows)
+    unique_verified = auditor.wordlist & (
+        getattr(auditor, "successful_get_urls", set()) |
+        getattr(auditor, "prior_verified_urls", set()))
     unverified = max(0, len(auditor.wordlist) - len(unique_verified))
     lines = [
         "WORDPRESS AUDITOR / " + auditor.scan_mode.upper() + " SCAN",
         "Target: " + target,
-        "Requests %d/%d  |  Response checks: %d" %
+        "Requests %d/%d  |  Recorded results: %d" %
         (auditor.request_count, auditor.limit, len(rows)),
         "Discovered URLs: %d  |  Fetched: %d  |  Not fetched: %d" %
         (len(auditor.wordlist), len(unique_verified), unverified),
-        "AJAX actions: %d  |  Payload variants %d  |  Method probes: %d" %
-        (len(auditor.ajax_actions), auditor.payload_cases, auditor.method_checks),
+        "AJAX actions: %d  |  Plugin assets: %d  |  Themes: %d" %
+        (len(auditor.ajax_actions), len(auditor.plugin_slugs), len(auditor.theme_slugs)),
+        "Payload variants %d  |  Method probes: %d" %
+        (auditor.payload_cases, auditor.method_checks),
         "SEVERITY: " + "  ".join("%s:%d" % (level, sum(
             r.get("severity", "INFO") == level for r in rows))
             for level in ("HIGH", "MEDIUM", "LOW", "REVIEW", "INFO")),
@@ -100,6 +108,21 @@ def format_terminal(auditor, rows, verbose=False, target=None):
         else:
             lines.append("  [DONE] %-38s %3d requests / %3d results" %
                          (phase["name"], phase["requests"], phase["checks"]))
+    if getattr(auditor, "coverage_rows", None):
+        lines += ["", "WORDPRESS TECHNIQUE COVERAGE",
+                  "  " + auditor.coverage_summary,
+                  "  CHECKED means requests/results inspected, NOT a vulnerability."]
+        from collections import Counter as _Counts
+        grouped = {}
+        for item in auditor.coverage_rows:
+            counts = grouped.setdefault(item["category"], _Counts())
+            counts[item["status"]] += 1
+        for category, counts in grouped.items():
+            tested = counts["CHECKED"] + counts["PARTIAL"] + counts["BLOCKED"] + counts["ERROR"]
+            all_count = sum(counts.values())
+            lines.append("  %-12s %2d/%-2d attempted | %d partial | %d blocked | %d pending" % (
+                category, tested, all_count, counts["PARTIAL"], counts["BLOCKED"],
+                counts["SKIPPED"] + counts["OPT-IN"] + counts["MANUAL"]))
     lines += ["", "Discovered-URL checks: %d" % auditor.discovered_checks,
               "", "RECORDED CHECK RESPONSES (excludes crawl-only requests)",
               "  " + ("  ".join("%s:%s" % (k, v) for k, v in sorted(states.items()))
@@ -152,6 +175,14 @@ def format_terminal(auditor, rows, verbose=False, target=None):
                  "REVIEW is NOT a confirmed vulnerability.")
     lines.append("  - Anonymous access was not compared to all WordPress roles.")
     lines.append("  - No XSS/SQLi/IDOR is confirmed from HTTP status differences.")
+    if getattr(auditor, "coverage_rows", None):
+        pending = [r for r in auditor.coverage_rows if r["status"] in ("SKIPPED", "OPT-IN")]
+        if pending:
+            lines.append("  - %d WordPress techniques need prerequisites or were skipped; "
+                         "inspect coverage.json." % len(pending))
+            for item in pending[:4]:
+                lines.append("    %s %s: %s" % (
+                    item["id"], item["status"], item["reason"][:115]))
     if not any(r["name"] == "opt-in SSRF OAST injection" for r in rows):
         lines.append("  - No SSRF/OAST injection was attempted (requires --ssrf).")
     else:

@@ -330,7 +330,7 @@ class TestAuditor(unittest.TestCase):
 
     def test_xmlrpc_404_does_not_post(self):
         a = Auditor(self.url, limit=4)
-        a.request = lambda path, method="GET", data=None, headers=None: (404, b"", {})
+        a.request = lambda path, method="GET", data=None, headers=None, **kwargs: (404, b"", {})
         a.xmlrpc()
         self.assertEqual(len(a.results), 1)
         self.assertNotEqual(a.results[0].status, 200)

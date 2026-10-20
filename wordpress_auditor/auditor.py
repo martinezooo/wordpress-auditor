@@ -97,8 +97,15 @@ class Auditor:
         self.results = []
         self.request_count = 0
         self.ajax_actions = set()
+        self.plugin_slugs = set()
+        self.theme_slugs = set()
         self.wordlist = set()
         self.requested_urls = set()
+        self.successful_get_urls = set()
+        self.prior_verified_urls = set()
+        self.recheck_prior_urls = False
+        self.queue_checked_count = 0
+        self.queue_pending_count = 0
         self.payload_cases = 0
         self.discovered_checks = 0
         self.method_checks = 0
@@ -119,8 +126,18 @@ class Auditor:
             p.scheme.lower(), p.hostname.lower() if p.hostname else "", p.port or (443 if p.scheme == "https" else 80)
         ) == self.origin and p.scheme.lower() == self.origin[0]
 
+    @staticmethod
+    def _response_headers(response):
+        values = dict(response.headers)
+        # Multiple WordPress login cookies are distinct Set-Cookie headers.
+        # Preserve them only in-memory for immediate session verification.
+        cookies = response.headers.get_all("Set-Cookie", [])
+        if cookies:
+            values["Set-Cookie"] = "\n".join(cookies)
+        return values
+
     def request(self, path, method="GET", data=None, headers=None,
-                include_credentials=None, test_headers=False):
+                include_credentials=None, test_headers=False, isolate_headers=False):
         if self.request_count >= self.limit:
             return None, b"", {"error": "request budget exhausted"}
         url = safe_url(self.base, path)
@@ -130,7 +147,9 @@ class Auditor:
         self.requested_urls.add(report_url(url))
         if self.delay:
             time.sleep(self.delay)
-        req_headers = {**self.headers, **(headers or {})}
+        # Test-account Application Password calls must not inherit cookies or
+        # REST nonces from an unrelated imported Burp session.
+        req_headers = {**({} if isolate_headers else self.headers), **(headers or {})}
         req_headers = {k: v for k, v in req_headers.items()
                        if k.lower() not in HOP_HEADERS and
                        (not k.lower().startswith("x-forwarded-")
@@ -139,14 +158,19 @@ class Auditor:
         # Credentials are only sent when explicitly authorized.
         if include_credentials is False or not self.authorized:
             req_headers = {k: v for k, v in req_headers.items()
-                           if k.lower() not in ("authorization", "cookie", "proxy-authorization")}
+                           if k.lower() not in ("authorization", "cookie",
+                                                "proxy-authorization", "x-wp-nonce")}
         req = urllib.request.Request(url, data=data, method=method, headers=req_headers)
         try:
             with self.opener.open(req, timeout=self.timeout) as r:
-                return r.status, r.read(512 * 1024), dict(r.headers)
+                if method.upper() == "GET":
+                    self.successful_get_urls.add(report_url(url))
+                return r.status, r.read(512 * 1024), self._response_headers(r)
         except urllib.error.HTTPError as e:
             try:
-                return e.code, e.read(64 * 1024), dict(e.headers)
+                if method.upper() == "GET":
+                    self.successful_get_urls.add(report_url(url))
+                return e.code, e.read(64 * 1024), self._response_headers(e)
             finally:
                 e.close()
         except Exception as e:
@@ -263,6 +287,26 @@ class Auditor:
                 self.add("AJAX action " + action, path, status, detail=state, visibility="response-observed")
         return sorted(self.ajax_actions)
 
+    def discover_plugin_theme_assets(self):
+        """Passive indicators from fetched HTML/JS URLs; no version/CVE matching."""
+        for uri in self.wordlist:
+            path = urllib.parse.urlsplit(uri).path
+            for kind, collection in (
+                ("plugins", self.plugin_slugs), ("themes", self.theme_slugs)
+            ):
+                match = re.search(
+                    r"/wp-content/" + kind + r"/([A-Za-z0-9_-]{1,60})/", path,
+                    re.I,
+                )
+                if match:
+                    collection.add(match.group(1).lower())
+        self.add("WP plugin asset discovery", "/wp-content/plugins/", None,
+                 detail="%d plugin asset groups identified; no version checks" %
+                 len(self.plugin_slugs), visibility="observed")
+        self.add("WP theme asset discovery", "/wp-content/themes/", None,
+                 detail="%d theme asset groups identified; no version checks" %
+                 len(self.theme_slugs), visibility="observed")
+
     def _phase(self, title, function, enabled=True, reason="not enabled"):
         """Run a named scan phase and retain actual work/skip reasons."""
         before_requests = self.request_count
@@ -271,11 +315,15 @@ class Auditor:
             phase = {"name": title, "requests": 0, "checks": 0,
                      "state": "skipped", "reason": reason}
             self.phase_stats.append(phase)
+            if self.progress_callback:
+                self.progress_callback("done", title, self, phase)
             return
         if self.request_count >= self.limit:
             phase = {"name": title, "requests": 0, "checks": 0,
                      "state": "skipped", "reason": "request budget exhausted"}
             self.phase_stats.append(phase)
+            if self.progress_callback:
+                self.progress_callback("done", title, self, phase)
             return
         if self.progress_callback:
             self.progress_callback("start", title, self)
@@ -297,6 +345,7 @@ class Auditor:
         xmlrpc=False, search_comment=None, comment_mode="rest", languages=None,
         ajax_probe=False, no_ajax=False,
         payloads=None, payload_limit=30, probe_discovered=True, deep=False,
+        identity_credentials=None, disable_identity=False,
     ):
         self.scan_mode = "deep" if deep else "smart" if full else "quick"
         self.phase_stats = []
@@ -309,6 +358,43 @@ class Auditor:
                         reason="valid --comment-post-id required")
         self._phase("XML-RPC protocol diagnostics", self.xmlrpc,
                     enabled=xmlrpc or full, reason="requires --xmlrpc or smart/full mode")
+
+        from .wp_identity import WordPressIdentity
+        identity = WordPressIdentity(self, identity_credentials)
+        self._phase("WordPress public users / author archives",
+                    lambda: identity.public_users(
+                        max_authors=3 if self.limit >= 80 else 1),
+                    enabled=full and not disable_identity and self.limit >= 45,
+                    reason="disabled or request budget below 45; use --max-requests 180")
+        self._phase("WordPress private REST permission checks",
+                    identity.protected_rest,
+                    enabled=full and not disable_identity and self.limit >= 60,
+                    reason="not enabled or request budget too small")
+        self._phase("WordPress login, reset and registration surfaces",
+                    lambda: identity.login_surfaces(
+                        max_checks=7 if self.limit >= 100 else 2),
+                    enabled=full and not disable_identity and self.limit >= 45,
+                    reason="disabled or request budget below 45; use --max-requests 180")
+        self._phase("Authenticated REST identity and role boundaries",
+                    identity.authenticated_rest,
+                    enabled=full and not disable_identity and (
+                        bool(identity.credentials.app_header()) or self.authorized),
+                    reason="no test-account application password/session supplied")
+        self._phase("Multiple test-role WordPress capability matrix",
+                    identity.role_matrix,
+                    enabled=full and not disable_identity and bool(
+                        identity.credentials.role_sessions),
+                    reason="no --role-request LABEL:FILE sessions supplied")
+        self._phase("Single test-account WordPress login",
+                    identity.single_login,
+                    enabled=full and not disable_identity and bool(
+                        identity.credentials.login_user and identity.credentials.login_password),
+                    reason="no --login-user + login password environment supplied")
+        self._phase("Test-account XML-RPC authentication",
+                    identity.xmlrpc_test_account,
+                    enabled=full and not disable_identity and bool(
+                        identity.credentials.app_header()),
+                    reason="no application password for XML-RPC supplied")
 
         def _access_control():
             if self.request_count + 3 > self.limit:
@@ -380,13 +466,16 @@ class Auditor:
                         self.results[-1].detail + " marker-found")
         self._phase("WordPress/WooCommerce REST and public surfaces", _core)
 
+        def _crawl_and_inspect():
+            self.discover_ajax(
+                probe=ajax_probe,
+                page_cap=min(30, max(1, depth) *
+                             (12 if deep else min(8, max(3, self.limit // 12))
+                              if full else 4)),
+                asset_cap=20 if deep else 12 if full else 8)
+            self.discover_plugin_theme_assets()
         self._phase("HTML/JavaScript crawling and AJAX discovery",
-                    lambda: self.discover_ajax(
-                        probe=ajax_probe,
-                        page_cap=min(30, max(1, depth) *
-                                     (12 if deep else min(8, max(3, self.limit // 12))
-                                      if full else 4)),
-                        asset_cap=20 if deep else 12 if full else 8),
+                    _crawl_and_inspect,
                     enabled=not no_ajax, reason="disabled by --no-ajax")
         from .probes import ProbeSuite
         suite = ProbeSuite(self, payloads=payloads)
@@ -473,11 +562,15 @@ class Auditor:
             self.add("HTML marker search", html_path, s, detail=state, visibility=state)
 
     def xmlrpc(self):
-        """Bounded, read-only XML-RPC diagnostic methods. No login, pingback or multicall."""
+        """Bounded WordPress XML-RPC introspection; never login/multicall/pingback."""
         path = "/xmlrpc.php"
-        s, b, _ = self.request(path)
-        self.add("XML-RPC endpoint", path, s, b, "GET diagnostic (405 is normal)")
-        if s not in (200, 405):
+        status, body, _ = self.request(path, include_credentials=False)
+        self.add("XML-RPC endpoint GET", path, status, body,
+                 "GET returned HTTP %s; 405 is common WordPress behavior" % status)
+        # Even when GET is WAF-blocked (403), a single standards-compliant POST
+        # can clarify whether the XML-RPC method endpoint is reachable.
+        # A definite 404/5xx/network failure is not retried by default.
+        if status not in (200, 403, 405) or self.request_count >= self.limit:
             return
         probes = [
             ("system.listMethods", "system.listMethods", False),
@@ -485,19 +578,26 @@ class Auditor:
             ("unknown method fault", "wordpressAuditor.unknownReadOnlyMethod", False),
             ("malformed XML fault", "", True),
         ]
-        for label, method, malformed in probes:
+        for idx, (label, method, malformed) in enumerate(probes):
             if self.request_count >= self.limit:
                 break
             if malformed:
                 payload = b"<methodCall><methodName>incomplete"
             else:
                 payload = ("<?xml version='1.0'?><methodCall><methodName>"
-                           + method + "</methodName><params/></methodCall>").encode("utf-8")
-            status, body, _ = self.request(path, "POST", payload, {"Content-Type": "text/xml"})
-            detail = parse_xmlrpc_response(body) if body else "empty response"
-            if status in (401, 403):
-                detail = "blocked by access controls"
-            self.add("XML-RPC " + label, path, status, detail=detail)
+                           + method + "</methodName><params/></methodCall>").encode()
+            st, b, _ = self.request(
+                path, "POST", payload, {"Content-Type": "text/xml"},
+                include_credentials=False)
+            detail = parse_xmlrpc_response(b) if b else "empty response"
+            if st in (401, 403):
+                detail = "XML-RPC POST access denied (HTTP %s)" % st
+            elif st in (404, 405):
+                detail = "XML-RPC POST method unavailable (HTTP %s)" % st
+            self.add("XML-RPC " + label, path, st, detail=detail)
+            if idx == 0 and (st is None or st in (401, 403, 404, 405) or st >= 500):
+                # Don't repeat four probes after a definitive initial block.
+                break
 
     def comment(self, post_id, content, name, email, mode="rest"):
         if isinstance(mode, bool):

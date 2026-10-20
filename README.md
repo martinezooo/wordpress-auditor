@@ -1,193 +1,229 @@
 # wordpress-auditor
 
-Bounded WordPress/WooCommerce HTTP auditor. **Run only against systems you own or
-have explicit permission to test.** This project does not brute-force accounts,
-automatically post comments, or perform plugin-version/CVE matching.
+A focused WordPress / WooCommerce security auditor for **authorized assessments**.
+It tests WordPress-specific behaviors, not plugin-version CVEs or generic XSS,
+SQL injection and IDOR payloads.
 
-## Install
+**What makes this different from a URL wordlist?** Every scan reports what
+actually ran, what was blocked, what needs review and which checks were
+skipped. The built-in technique catalog explicitly distinguishes tests from
+manual and opt-in activities. HTTP 200, 401 or 403 alone is **not** a finding.
 
-Requires Python 3.9+. Clone the repository and install in a virtual environment:
+References: [HackTricks WordPress](https://book.hacktricks.wiki/en/network-services-pentesting/pentesting-web/wordpress.html),
+[WordPress REST API](https://developer.wordpress.org/rest-api/reference/),
+[WordPress Authentication](https://developer.wordpress.org/rest-api/using-the-rest-api/authentication/).
 
-```sh
+## Installation (Kali / macOS / Linux)
+
+Python **3.10+** required.
+
+~~~sh
 git clone https://github.com/martinezooo/wordpress-auditor.git
 cd wordpress-auditor
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e .
-wordpress-auditor --help
-```
+wordpress-auditor --list-checks
+~~~
 
-## Basic usage
+## Run a scan
 
-```sh
-# Smart audit by default, showing phases and a human-readable explanation.
-# Includes limited read-only XML-RPC POST diagnostic calls.
-wordpress-auditor --url https://example.invalid
+~~~sh
+# Standard smart scan: WordPress checks, live colored progress, reports
+wordpress-auditor --url https://your-authorized-lab.example
 
-# Optional quick mode, without XML-RPC method introspection
-wordpress-auditor --url https://example.invalid --quick
+# Detailed phase/check output and explicitly forced colors
+wordpress-auditor --url https://your-authorized-lab.example --verbose --color always
 
-# Stream engine phases while executing
-wordpress-auditor --url https://example.invalid --progress
+# Quick reconnaissance with a tighter request budget
+wordpress-auditor --url https://your-authorized-lab.example --quick
 
-# Print every individual endpoint check
-wordpress-auditor --url https://example.invalid --verbose
-
-# Explicit smart mode (identical to the default)
-wordpress-auditor --url https://example.invalid --full
-
-# Save all evidence and a concise explanation without JSON output to console
-wordpress-auditor --url https://example.invalid --output ./audit/report.json
-
-# Explicit detailed stdout (JSON/CSV/Markdown)
-wordpress-auditor --url https://example.invalid --format json
-# Automated bounded payload tests: paths, read-only method negotiation,
-# conditional 401/403 header variations, and discovered URL rechecks.
-wordpress-auditor --url https://example.invalid --full --max-requests 180 \
-  --output ./audit/report.json
-
-# Deeper GET/header payload audit with imported prior Burp Intruder ZIP.
-wordpress-auditor --url https://example.invalid --deep \
-  --payloads ~/Downloads/wp_intruder_expanded.zip \
-  --payload-limit 160 --max-requests 350 \
+# Deeper bounded GET/path/header suite (can import earlier Intruder payload ZIP)
+wordpress-auditor --url https://your-authorized-lab.example --deep \
+  --payloads ~/Downloads/wp_intruder_expanded.zip --max-requests 350 \
   --output ./audit/deep.json
 
-# Narrow a scan to a supplied HTTP request context plus known cookies.
-wordpress-auditor --request request.txt --authorized --full \
+# Use cookies and a nonce from your own test session in a raw Burp request
+wordpress-auditor --request request.txt --authorized \
   --output ./audit/authenticated.json
 
-# Optional OAST SSRF: one explicit request to an in-scope endpoint.
-# It cannot confirm SSRF without a separate Collaborator callback.
-wordpress-auditor --url https://example.invalid --ssrf \
-  --collaborator-url https://your-id.oast.invalid/callback \
+# Inspect every supported, optional, manual and skipped technique
+wordpress-auditor --list-checks
+~~~
+
+The output uses **HIGH** (red), **MEDIUM** (yellow), **LOW** (cyan),
+**REVIEW** (magenta), and **INFO** (cyan). Green DONE means a phase finished,
+not that a vulnerability was exploited.
+
+With an interactive terminal, stage progress and significant observations
+are printed immediately. Use --progress for non-interactive terminals,
+--progress-every 5 to adjust heartbeat frequency, --verbose for each result,
+or --no-color for plain logs. A scan uses a shared request budget (default
+180 in smart mode, 350 in deep mode), per-request delay (default 0.2s)
+and a no-redirect, same-origin HTTP transport.
+
+## What is checked automatically?
+
+| Group | Examples |
+|---|---|
+| WordPress identity | Public authors in REST, bounded author archives, private edit-context data, anonymous /users/me |
+| REST permissions | Anonymous access to settings, plugins, themes and Application Password metadata |
+| Login/registration | WordPress login, password-reset and registration forms, installer and DB repair exposure |
+| XML-RPC | GET status, safe POST system.listMethods and system.getCapabilities, unknown-method and malformed-XML fault responses |
+| WooCommerce | Public Store API versus protected WooCommerce REST routes and product reviews |
+| AJAX | Discover action names from HTML/JavaScript and same-origin asset references |
+| Configuration | Public wp-config backups, .env, debug.log, .git/HEAD and WordPress content directory listings |
+| Routing | HTTP HEAD/OPTIONS, admin access checks, path/header normalization controls |
+| Discovery | REST route index, HTML, JS, sitemap, persisted wordlist and bounded read-back |
+
+Plugin and theme asset paths are identified **without version matching or CVE lookups**.
+Sensitive response bodies, user email addresses, passwords, tokens and cookies
+are never copied into report findings.
+
+A 403 to XML-RPC GET doesn't automatically stop testing: one safe
+system.listMethods POST is attempted to distinguish GET filtering from XML-RPC
+protocol availability. The scanner does **not** invoke pingback.ping,
+system.multicall, wp-cron.php or a password brute-force.
+
+## Authenticated testing with your own test account
+
+No username or password guessing occurs. Without credentials the scanner
+automatically runs anonymous checks and explains which authenticated checks
+were skipped.
+
+### Application Password (preferred for REST API)
+
+Use the **Application Password**, not your primary login password.
+Provide it in an environment variable, **never in CLI arguments, Git files
+or chat messages**. The scanner validates identity via /wp-json/wp/v2/users/me
+and compares a limited selection of anonymous and authenticated read-only
+endpoints. It also tries **one** wp.getUsersBlogs request to XML-RPC
+using that valid test account where XML-RPC is supported.
+
+~~~sh
+read -rs WPAUDITOR_APP_PASSWORD
+export WPAUDITOR_APP_PASSWORD
+wordpress-auditor --url https://your-authorized-lab.example \
+  --auth-user YOUR_TEST_USERNAME --output ./audit/test-account.json
+unset WPAUDITOR_APP_PASSWORD
+~~~
+
+### WordPress login form (one attempt only)
+
+If you specifically want to test wp-login.php authentication with a real
+test account's **primary password**, provide a separate environment variable.
+The scanner sends exactly one POST, does not follow redirects, and attempts
+to verify the resulting session only when it receives WordPress session cookies.
+A 2FA challenge, failed login or redirect is **not** reported as a confirmed
+authenticated session.
+
+~~~sh
+read -rs WPAUDITOR_LOGIN_PASSWORD
+export WPAUDITOR_LOGIN_PASSWORD
+wordpress-auditor --url https://your-authorized-lab.example \
+  --login-user YOUR_TEST_USERNAME
+unset WPAUDITOR_LOGIN_PASSWORD
+~~~
+
+### Several WordPress roles (read-only comparison)
+
+Export one raw Burp HTTP/1.1 request per valid test session containing its
+Cookie and X-WP-Nonce, then provide them with role labels. All requests must
+match the exact target origin. This checks the same private REST endpoints
+with each session; roles are not guessed, and a label isn't trusted unless
+the REST profile confirms it. No role modifications are attempted.
+
+~~~sh
+wordpress-auditor --url https://your-authorized-lab.example   --role-request subscriber:subscriber.burp   --role-request shop_manager:shop-manager.burp   --role-request administrator:administrator.burp   --output ./audit/roles.json
+~~~
+
+The two credential modes are optional and may be used together.
+They require HTTPS except for local loopback tests. Existing Burp cookies
+and X-WP-Nonce can be supplied with --request and --authorized.
+WordPress REST cookie authentication may reject a cookie-only session without
+a valid REST nonce.
+
+## Optional actions
+
+~~~sh
+# Search for a previously submitted harmless comment marker
+wordpress-auditor --url https://your-authorized-lab.example \
+  --search-comment UNIQUE_MARKER
+
+# Post one benign test comment only on explicit command
+wordpress-auditor --url https://your-authorized-lab.example \
+  --post-comment --comment-post-id 42 --comment-mode form \
+  --marker UNIQUE_MARKER
+
+# Opt in to GET probes of discovered AJAX handlers; GET can have side effects
+wordpress-auditor --url https://your-authorized-lab.example --ajax-probe
+
+# A single SSRF OAST injection into an operator-chosen in-scope URL parameter
+wordpress-auditor --url https://your-authorized-lab.example --ssrf \
   --ssrf-path /wp-admin/admin-ajax.php --ssrf-action preview_url \
-  --ssrf-param url --ssrf-method GET --max-requests 60
+  --ssrf-param url --collaborator-url https://your-token.oast.invalid
+~~~
 
-# Import raw Burp HTTP/1.1 request as base URL and headers; does not replay it
-wordpress-auditor --request request.txt --authorized
-# Search for a marker in comments/reviews, feeds and multilingual HTML
-wordpress-auditor --url https://example.invalid --search-comment 'unique-marker' --languages en,fr
-# Opt-in XML-RPC protocol diagnostics: system.listMethods; never pingback or login
-wordpress-auditor --url https://example.invalid --xmlrpc
-# Passive same-origin AJAX discovery with stable URL/action wordlists
-wordpress-auditor --url https://example.invalid --wordlist-out ./audit-wordlist.txt
-# Explicit opt-in, bounded GET action checks (never POSTs or follows redirects)
-wordpress-auditor --url https://example.invalid --ajax-probe --wordlist-out ./audit-wordlist.txt
-# Exactly one harmless comment submission to known post ID; no implicit writes
-wordpress-auditor --url https://example.invalid --post-comment --comment-post-id 42 --comment-mode form --marker 'unique-marker'
-```
+The SSRF test never directly requests the collaborator URL. HTTP 200 is not
+proof of SSRF; correlate the callback separately. Unknown AJAX POST handlers,
+password attacks, plugin/theme PHP execution, user creation and DoS techniques
+are not executed by default or as part of --deep.
 
-## Colored live results (Kali, Linux, macOS)
+## Scan output
 
-Interactive terminals use severity colors, and live progress is shown every
-10 requests. A long URL-discovery pass is no longer silent.
+Files are placed in the ignored local audit/ directory by default.
 
-- HIGH (red): verified public WordPress configuration backup with configuration
-  directives. Credentials themselves are never printed.
-- MEDIUM (yellow): verified public WordPress/PHP diagnostic log content.
-- LOW (cyan): verified WordPress uploads directory listing.
-- REVIEW (magenta): noteworthy differences, server errors, or OAST
-  verification required, NOT a confirmed vulnerability.
-- INFO (cyan): standard endpoint observation. Green DONE means that
-  the scan phase completed, NOT that exploitation succeeded.
+| File | Purpose |
+|---|---|
+| scan-summary.md | Human explanation of what ran and what was observed |
+| coverage.json / coverage.md | **Every WordPress-specific technique**: CHECKED, PARTIAL, BLOCKED, SKIPPED, OPT-IN, MANUAL or ERROR, with reason and reference |
+| latest-report.json | Individual results with HTTP status, severity, confidence and sanitized detail |
+| wordlist.txt | Deduplicated same-origin URL paths, merged between scans |
+| url-queue.json | Same-origin URL verification state: checked vs pending |
+| ajax-actions.txt | Discovered AJAX actions (no automatic write requests) |
 
-The severities are evidence-gated, not automatically calculated CVSS scores.
-They require WordPress-specific content signatures and are not inferred from
-200/403 alone.
+## Does it test every path?
 
-Useful flags: --progress, --progress-every 5, --verbose, --color always,
---no-color. The NO_COLOR environment variable disables ANSI colors. Report
-files JSON, CSV and Markdown stay plain and provide severity and confidence
-as separate fields. Tests only contact local mock servers.
+There is no finite list of all WordPress paths: plugins can register arbitrary
+REST routes, AJAX actions and frontend pages. The scanner automatically
+collects candidate paths from bounded WordPress core probes, REST route
+discovery, HTML and JavaScript, sitemap and previously saved wordlists.
 
-## What happens during a normal scan?
+Eligible read-only GET routes are checked while the shared request budget
+allows. Some routes are intentionally excluded, including cart, checkout,
+logout, download, payment, and dynamic URLs with potentially state-changing
+effects. Variable REST routes need real context and are not blindly fuzzed.
 
-The default scan is now smart rather than the old limited quick mode. The CLI
-explains each module and actual HTTP request/check counts: XML-RPC,
-administrator access controls, WP/Woo REST, HTML/JS crawling, AJAX action
-discovery, HEAD/OPTIONS capability tests, GET verification of discovered
-routes, and differential path/header payload checks.
+The url-queue.json file remembers actual HTTP-responding GETs from prior scans.
+The next run prioritizes unverified paths rather than starting at the
+beginning of the wordlist again. --recheck-urls repeats previously
+verified discovered paths. A checked URL means a real HTTP response was
+received, NOT that the URL is secure or vulnerability-free.
 
-Results are stored in the ignored local audit/ directory:
-- scan-summary.md: human-readable description of phases and observations
-- latest-report.json: every individual request/check result
-- wordlist.txt and ajax-actions.txt: reusable, deduplicated discoveries
+The console reports checked vs pending paths; queue and coverage.md
+show what has not been verified. --max-requests and --delay continue to
+control rate. Always use a clearly defined authorized scope.
 
-The engine spends unused request budget on newly discovered in-scope GET
-routes rather than stopping after eight URL checks. It also discovers
-concrete GET-capable paths directly from the REST route index, avoiding
-variable, cart, checkout and payment paths. A 200 status does not prove
-privileged access. A 401/403 status usually means access control.
-An automated scan cannot guarantee discovery of every vulnerability.
+Use --output ./audit/report.json to choose the report path, --format json/csv/md
+for verbose machine-readable terminal output, and --list-checks to print
+the entire technique catalog before scanning.
 
-The default console view is a short, factual summary, not a JSON array.
-Use --format json, --format csv, or --format md for detailed stdout.
-Using --output report.json writes detailed findings to that file and keeps
-the terminal summary concise. Add --verbose to show individual checks.
+**Limitations:** This is a bounded black-box auditor. It cannot inspect PHP
+source for missing capability checks, prove plugin-specific authentication
+bypasses from HTTP statuses, or safely execute every published HackTricks
+exploit. Those are marked MANUAL rather than silently counted as tests.
+Do not mistake a public author slug or enabled XML-RPC for a vulnerability.
 
---full enables a broader bounded read-only HTTP probe list and also runs
-XML-RPC protocol diagnostics. Those diagnostics use several small POST
-requests, but only for read-only introspection and malformed-method
-error responses: no login, pingback, multicall, brute-force, or DoS.
-Both --full and --xmlrpc consume the global request budget.
-Rate limit with --delay (default 0.2s) and --max-requests (default 180 for smart mode).
-A response code of 200, 302 or 401 alone is not proof of a vulnerability.
+## Offline self-tests
 
-HTTP responses are not vulnerabilities. `401/403` indicate access controls;
-`200` or `302` alone does not prove a bypass. Comment write acknowledgement
-does not prove publication. Read-back independently checks public access
-(without cookies) and, when configured, the authenticated session.
+Tests use Python local HTTP fixtures on 127.0.0.1 only.
 
-`--request` treats the Burp request as context, *not* as a request to replay
-the original body/method. HTTPS is the default (use `--scheme http` only when
-appropriate). Authorization/Cookie headers are sent only with `--authorized`;
-hop-by-hop headers are removed and redirects are never followed. Query
-parameters and response body snippets are omitted from saved findings.
+~~~sh
+python3 -m unittest discover -s tests -v
+python3 -m compileall -q wordpress_auditor
+wordpress-auditor --help
+wordpress-auditor --list-checks
+~~~
 
-AJAX discovery is passive by default: it reads a small bounded set of same-origin
-HTML, JavaScript, REST-index and sitemap resources, then writes deduplicated
-query-free URLs to `--wordlist-out` and sorted action names to `ajax-actions.txt`
-beside it. `--ajax-probe` is required to call observed actions with bounded GET
-requests; responses are reported as requiring review, not as authentication
-bypasses. `--no-ajax` disables discovery. No off-origin requests, cookies in
-unauthenticated comparisons, POST action probes, or redirects are used.
-
-## Automated verification model
-
-This auditor performs bounded response comparisons, not only endpoint listing.
-Normal scans discover AJAX actions and URLs, keep them in audit/wordlist.txt
-and audit/ajax-actions.txt, and recheck prior same-origin discoveries.
---full probes additional WP/WooCommerce REST endpoints, XML-RPC introspection,
-HTTP HEAD/OPTIONS, and path/header variations. --deep increases request budget
-and can use the complete previously generated Burp Intruder payload package.
---payloads accepts 01_headers.txt and 02_urls.txt in either ZIP or folder form;
-unsafe or out-of-scope candidates are filtered. Write-capable HTTP methods
-and comment/XSS payloads are never fired automatically. --post-comment is
-explicit for one harmless marker. No brute force or DoS.
-
---max-requests and --delay control load. --quick defaults to 60.
-Normal smart mode (including --full) defaults to 180. --deep defaults to 350. All modules share the global request limit.
---no-probe-discovered saves URLs without requesting them. --no-ajax disables
-action discovery. Header spoofing tests never include session cookies.
-Same-origin checks and no-redirect transport prevent off-origin crawling.
-
-Interpretation: a response difference means requires-review, NOT a proven
-privilege bypass. Login pages and soft-404s can cause false positives.
-SSRF requires a separately confirmed Collaborator callback; HTTP 200 is
-not proof. This tool complements Burp, manual role testing, and Nuclei.
-
-## Offline tests and shareable log (macOS)
-
-```sh
-set -o pipefail
-{
-  python3 -m unittest discover -s tests -v
-  python3 -m compileall -q wordpress_auditor
-  wordpress-auditor --help
-} 2>&1 | tee wordpress-auditor-check.log
-pbcopy < wordpress-auditor-check.log
-```
-
-Tests connect only to `127.0.0.1` fixtures. Do not paste real cookies,
-Authorization headers, customer requests or private URLs into public issues.
-Reports are best-effort diagnostics, not a vulnerability confirmation.
+Never publish real Burp request files, session cookies, authentication
+tokens, test-user passwords, internal WordPress reports or client URLs.

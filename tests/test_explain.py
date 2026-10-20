@@ -29,6 +29,8 @@ class LargeSite(BaseHTTPRequestHandler):
         if self.path == "/":
             links = "".join('<a href="/content/%03d">Article</a>' % i
                             for i in range(85))
+            links += '<script src="/wp-content/plugins/fixture-plugin/app.js"></script>'
+            links += '<link href="/wp-content/themes/fixture-theme/style.css" rel="stylesheet">'
             self.respond(200, links.encode(), "text/html")
         elif self.path == "/wp-json/":
             routes = {
@@ -95,6 +97,16 @@ class ExplainScanTest(unittest.TestCase):
         self.assertNotIn("/wc/store/v1/cart", routes)
         self.assertNotIn("(?P", routes)
         self.assertNotIn("/administration", routes)
+
+    def test_plugin_theme_assets_discovered_without_version_checks(self):
+        a = Auditor(self.url, limit=85, delay=0)
+        a.discover(full=True, payload_limit=2)
+        self.assertIn("fixture-plugin", a.plugin_slugs)
+        self.assertIn("fixture-theme", a.theme_slugs)
+        names = [r.name for r in a.results]
+        self.assertIn("WP plugin asset discovery", names)
+        self.assertIn("WP theme asset discovery", names)
+        self.assertFalse(any("CVE" in r.detail for r in a.results))
 
     def test_console_is_explanatory_and_evidence_scoped(self):
         a = Auditor(self.url, limit=70)

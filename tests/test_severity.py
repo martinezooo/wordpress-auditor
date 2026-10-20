@@ -40,6 +40,12 @@ class WordPressArtifacts(BaseHTTPRequestHandler):
         elif self.path == "/wp-content/uploads/":
             status = 200
             content = b"<html><title>Index of /wp-content/uploads/</title></html>"
+        elif self.path == "/.env":
+            status = 200
+            content = b"DB_PASSWORD=FIXTURE_PLACEHOLDER\nWP_HOME=https://fixture.invalid"
+        elif self.path == "/.git/HEAD":
+            status = 200
+            content = b"ref: refs/heads/main\n"
         elif self.path == "/wp-config.php~":
             status = 200
             content = b"<html><h1>WordPress homepage</h1></html>"
@@ -71,15 +77,33 @@ class TestSeverityPresentation(unittest.TestCase):
 
     def test_signature_confirmed_high_medium_low_and_no_leaks(self):
         a = Auditor(self.url, limit=12, delay=0)
-        self.assertEqual(check_exposures(a), 6)
+        from wordpress_auditor.wp_checks import CHECKS
+        self.assertEqual(check_exposures(a), len(CHECKS))
         verified = {r.severity: r for r in a.results if r.confidence == "confirmed"}
         self.assertEqual(set(verified), {"HIGH", "MEDIUM", "LOW"})
-        self.assertEqual(verified["HIGH"].visibility, "confirmed-public-config-backup")
-        self.assertEqual(verified["MEDIUM"].visibility, "confirmed-public-debug-log")
+        self.assertTrue(any(r.visibility=="confirmed-public-config-backup"
+                            for r in a.results if r.severity=="HIGH"))
+        self.assertTrue(any(r.visibility=="confirmed-public-env-config"
+                            for r in a.results if r.severity=="HIGH"))
+        self.assertTrue(any(r.visibility=="confirmed-public-debug-log"
+                            for r in a.results if r.severity=="MEDIUM"))
+        self.assertTrue(any(r.visibility=="confirmed-public-git-metadata"
+                            for r in a.results if r.severity=="MEDIUM"))
         self.assertEqual(verified["LOW"].visibility, "confirmed-public-directory-listing")
         self.assertEqual(a.results[0].severity, "INFO")
         self.assertNotIn(EXAMPLE_SECRET, json.dumps([r.__dict__ for r in a.results]))
         self.assertNotIn(EXAMPLE_SECRET, format_terminal(a, [r.__dict__ for r in a.results]))
+
+    def test_env_and_git_exposures_are_content_confirmed_and_redacted(self):
+        from wordpress_auditor.wp_checks import CHECKS
+        a = Auditor(self.url, limit=len(CHECKS)+1, delay=0)
+        check_exposures(a)
+        env = [r for r in a.results if r.url.endswith("/.env")][0]
+        git = [r for r in a.results if r.url.endswith("/.git/HEAD")][0]
+        self.assertEqual(env.severity, "HIGH")
+        self.assertEqual(git.severity, "MEDIUM")
+        self.assertNotIn("FIXTURE_PLACEHOLDER", json.dumps(
+            [r.__dict__ for r in a.results]))
 
     def test_soft404_and_access_denied_do_not_make_severity(self):
         a = Auditor(self.url, limit=12)
@@ -125,7 +149,7 @@ class TestSeverityPresentation(unittest.TestCase):
         self.assertNotIn("\033[", format_terminal(a, rows))
         self.assertNotIn("\033[", format_markdown(a, rows))
         self.assertNotIn("\033[", json.dumps(rows))
-        self.assertIn("HIGH:1", format_terminal(a, rows))
+        self.assertIn("HIGH:2", format_terminal(a, rows))
 
     def test_color_policy_auto_no_color_always(self):
         with patch.dict(os.environ, {"TERM": "xterm-256color"}, clear=True):

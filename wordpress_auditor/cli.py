@@ -6,6 +6,7 @@ import os
 import sys
 from collections import Counter
 from urllib.parse import urlsplit
+import ipaddress
 
 from .probes import safe_candidate
 
@@ -13,6 +14,10 @@ from .auditor import Auditor, parse_burp, report_url
 from .probes import ssrf_oast_probe
 from .reporting import format_terminal, format_markdown
 from .console import LivePrinter, supports_color, color_summary
+from .check_catalog import coverage as build_coverage, summary as coverage_summary
+from .check_catalog import describe_plan, render_coverage_markdown
+from .wp_identity import Credentials, RoleSession
+from .queue import load_previous as load_url_queue, save as save_url_queue
 
 
 def summarize(auditor, rows, verbose=False):
@@ -42,13 +47,27 @@ def render_details(rows, fmt):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description="bounded WordPress visibility auditor")
-    g = p.add_mutually_exclusive_group(required=True)
+    g = p.add_mutually_exclusive_group(required=False)
     g.add_argument("--url")
     g.add_argument("--request", help="file containing a raw Burp request")
+    p.add_argument("--list-checks", action="store_true",
+                   help="print all WordPress checks and opt-in/manual requirements; no network")
     p.add_argument("--timeout", type=float, default=8)
     p.add_argument("--languages", help="comma-separated locale prefixes, e.g. en,fr")
     p.add_argument("--scheme", choices=("http", "https"), default=None)
     p.add_argument("--authorized", action="store_true", help="allow supplied credentials and classify authenticated visibility")
+    p.add_argument("--no-identity", action="store_true",
+                   help="skip WordPress users/login/REST permission checks")
+    p.add_argument("--auth-user", metavar="USERNAME",
+                   help="valid WordPress test account for REST Application Password verification")
+    p.add_argument("--app-password-env", default="WPAUDITOR_APP_PASSWORD",
+                   help="environment variable holding its Application Password; never appears in reports")
+    p.add_argument("--role-request", action="append", default=[], metavar="ROLE:FILE",
+                   help="one authorized Burp request/session per WordPress role; can repeat")
+    p.add_argument("--login-user", metavar="USERNAME",
+                   help="valid test username for ONE wp-login.php login; never guesses usernames")
+    p.add_argument("--login-password-env", default="WPAUDITOR_LOGIN_PASSWORD",
+                   help="environment variable holding test account's primary password")
     p.add_argument("--cookie")
     p.add_argument("--header", action="append", default=[])
     p.add_argument("--proxy")
@@ -68,8 +87,8 @@ def main(argv=None):
                    help="small preliminary scan instead of the default smart audit")
     p.add_argument("--progress", action="store_true",
                    help="stream scan phase progress to stderr (TTY enables automatically)")
-    p.add_argument("--progress-every", type=int, default=10,
-                   help="show progress every N HTTP requests (default 10)")
+    p.add_argument("--progress-every", type=int, default=5,
+                   help="show progress every N HTTP requests (default 5)")
     p.add_argument("--color", choices=("auto", "always", "never"), default="auto",
                    help="ANSI colors in interactive terminal (default auto)")
     p.add_argument("--no-color", action="store_const", const="never", dest="color",
@@ -82,6 +101,8 @@ def main(argv=None):
                    help="max path/header variants in one scan")
     p.add_argument("--no-probe-discovered", action="store_true",
                    help="record but do not automatically GET discovered URLs")
+    p.add_argument("--recheck-urls", action="store_true",
+                   help="recheck already verified paths (default: prioritize pending paths)")
     p.add_argument("--ssrf", action="store_true",
                    help="send ONE explicit OAST injection to a chosen in-scope endpoint")
     p.add_argument("--collaborator-url", help="external HTTPS callback URL in your Collaborator")
@@ -97,6 +118,11 @@ def main(argv=None):
     p.add_argument("--verbose", action="store_true", help="show each checked endpoint")
     p.add_argument("--output", "--out", help="save report (extension .json, .csv, .md)")
     a = p.parse_args(argv)
+    if a.list_checks:
+        print(describe_plan())
+        return 0
+    if not (a.url or a.request):
+        p.error("one of --url or --request is required (or --list-checks)")
     if a.quick and (a.deep or a.full):
         p.error("--quick is incompatible with --deep and --full")
     if not a.quick:
@@ -126,13 +152,74 @@ def main(argv=None):
         k, v = item.split(":", 1)
         headers[k.strip()] = v.strip()
     if a.request:
-        with open(a.request, encoding="utf-8") as f:
+        # Preserve Burp's HTTP/1.1 CRLF framing exactly. Text mode normally
+        # translates CRLF to LF and breaks strict request parsing.
+        with open(a.request, encoding="utf-8", newline="") as f:
             url, burp_headers, _ = parse_burp(f.read(), a.scheme or "https")
         headers = {**burp_headers, **headers}
     else:
         url = a.url
-    auditor = Auditor(url, headers, a.cookie, a.proxy, limit=a.max_requests, delay=a.delay, timeout=a.timeout,
-                      authorized=a.authorized, scheme=a.scheme)
+    creds = Credentials()
+    if a.auth_user:
+        if not a.auth_user.strip():
+            p.error("--auth-user must not be empty")
+        secret = os.environ.get(a.app_password_env, "")
+        if not secret:
+            p.error("--auth-user requires a nonempty application password environment variable")
+        creds.username = a.auth_user
+        creds.application_password = secret
+    if a.login_user:
+        if not a.login_user.strip():
+            p.error("--login-user must not be empty")
+        secret = os.environ.get(a.login_password_env, "")
+        if not secret:
+            p.error("--login-user requires a nonempty login password environment variable")
+        creds.login_user = a.login_user
+        creds.login_password = secret
+    if a.role_request:
+        import re as _re
+        for supplied in a.role_request[:5]:
+            role, delim, filepath = supplied.partition(":")
+            if not delim or not filepath or not _re.fullmatch(r"[A-Za-z0-9_-]{1,30}", role):
+                p.error("--role-request requires a safe ROLE:FILE combination")
+            try:
+                with open(filepath, encoding="utf-8", newline="") as f:
+                    session_url, session_headers, _ = parse_burp(
+                        f.read(), a.scheme or urlsplit(url).scheme)
+            except (OSError, ValueError):
+                p.error("unable to parse --role-request as a valid HTTP/1.1 Burp request")
+            supplied_url = urlsplit(session_url)
+            target_url = urlsplit(url)
+            same_origin = (
+                supplied_url.scheme.lower(),
+                (supplied_url.hostname or "").lower(),
+                supplied_url.port or (443 if supplied_url.scheme == "https" else 80)
+            ) == (
+                (a.scheme or target_url.scheme).lower(),
+                (target_url.hostname or "").lower(),
+                target_url.port or (443 if (a.scheme or target_url.scheme) == "https" else 80)
+            )
+            if not same_origin:
+                p.error("--role-request origin differs from the scan target")
+            creds.role_sessions.append(RoleSession(role, session_headers))
+        if len(a.role_request) > 5:
+            p.error("at most five test-role sessions can be supplied")
+    if a.quick and (a.auth_user or a.login_user or a.role_request):
+        p.error("account tests run in the default smart mode, not --quick")
+    parsed_target = urlsplit(url)
+    if a.auth_user or a.login_user or a.role_request:
+        host = parsed_target.hostname or ""
+        try:
+            local = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            local = host.lower() == "localhost"
+        target_scheme = a.scheme or parsed_target.scheme
+        if target_scheme != "https" and not local:
+            p.error("test account credentials require HTTPS (except localhost/127.0.0.1)")
+    auditor = Auditor(url, headers, a.cookie, a.proxy, limit=a.max_requests, delay=a.delay,
+                      timeout=a.timeout, authorized=a.authorized or bool(a.auth_user or a.login_user
+                                                                         or a.role_request),
+                      scheme=a.scheme)
     live = a.progress or a.verbose or (sys.stderr.isatty() and a.format == "summary")
     presenter = LivePrinter(
         enabled=live, color=supports_color(sys.stderr, a.color),
@@ -160,6 +247,10 @@ def main(argv=None):
                 parsed = urlsplit(entry)
                 if safe_candidate(auditor, parsed.path):
                     auditor._wordlist_url(parsed.path)
+    queue_path = os.path.join(os.path.dirname(os.path.abspath(wordlist_out)),
+                              "url-queue.json")
+    load_url_queue(auditor, queue_path)
+    auditor.recheck_prior_urls = a.recheck_urls
     if a.ssrf:
         # Prioritize explicitly requested, single OAST injection under the shared budget.
         ssrf_oast_probe(auditor, a.ssrf_path, a.ssrf_param,
@@ -172,7 +263,8 @@ def main(argv=None):
                                comment_email=a.comment_email, ajax_probe=a.ajax_probe,
                                no_ajax=a.no_ajax, payloads=a.payloads,
                                payload_limit=a.payload_limit,
-                               probe_discovered=not a.no_probe_discovered, deep=a.deep)
+                               probe_discovered=not a.no_probe_discovered, deep=a.deep,
+                               identity_credentials=creds, disable_identity=a.no_identity)
     os.makedirs(os.path.dirname(os.path.abspath(wordlist_out)), exist_ok=True)
     with open(wordlist_out, "w", encoding="utf-8") as f:
         f.write("".join(url + "\n" for url in sorted(auditor.wordlist)))
@@ -184,8 +276,23 @@ def main(argv=None):
             old_actions = {x.strip() for x in f if re.fullmatch(r"[A-Za-z0-9_-]{1,80}", x.strip())}
     with open(actions_path, "w", encoding="utf-8") as f:
         f.write("".join(action + "\n" for action in sorted(auditor.ajax_actions | old_actions)))
+    queue = save_url_queue(auditor, queue_path)
     rows = [r.__dict__ for r in results]
+    checks = build_coverage(auditor)
+    auditor.coverage_rows = checks
+    auditor.coverage_summary = coverage_summary(checks)
+    coverage_path = os.path.join(os.path.dirname(os.path.abspath(wordlist_out)),
+                                 "coverage.json")
+    with open(coverage_path, "w", encoding="utf-8") as f:
+        json.dump(checks, f, indent=2)
+    coverage_md = os.path.join(os.path.dirname(os.path.abspath(wordlist_out)),
+                               "coverage.md")
+    with open(coverage_md, "w", encoding="utf-8") as f:
+        f.write(render_coverage_markdown(checks))
     summary = summarize(auditor, rows, verbose=a.verbose)
+    summary += "\nURL queue: %d checked, %d pending. Details: %s" % (
+        queue["checked_count"], queue["pending_count"], queue_path)
+    summary += "\nTechnique coverage: " + coverage_path
     summary += "\n\nSaved wordlist: " + wordlist_out
     summary_path = os.path.join(os.path.dirname(os.path.abspath(wordlist_out)),
                                 "scan-summary.md")
