@@ -219,29 +219,12 @@ class WordPressIdentity:
             ("WP installation wizard", "/wp-admin/install.php", "install"),
             ("WP database repair interface", "/wp-admin/maint/repair.php", "repair"),
         ]
+        from .wp_policy import classify
         for name, path, kind in routes[:max_checks]:
             if self.a.request_count >= self.a.limit:
                 break
             status, body, _ = self._get(name, path)
-            text = body[:64_000].decode("utf-8", "ignore")
-            if kind == "install" and status == 200 and (
-                    ("install wordpress" in text.lower() or "wordpress installation" in text.lower())
-                    and ("user_login" in text or "user_name" in text or "admin_email" in text)):
-                verdict = "review-wp-install-open"
-                detail = "WordPress setup form appears reachable; NO installation attempted"
-            elif kind == "repair" and status == 200 and (
-                    "repair=1" in text.lower() and "repair database" in text.lower()):
-                verdict = "review-wp-repair-open"
-                detail = "Database repair entry point advertised; NO repair attempted"
-            elif kind in ("login", "register", "lostpassword"):
-                verdict = "login-form-observed" if status == 200 and (
-                    "wp-login" in text.lower() or "user_login" in text.lower()
-                    or "<form" in text.lower()) else "observed"
-                detail = "%s page returned HTTP %s; no credential attempt" % (kind, status)
-            else:
-                verdict = "observed"
-                detail = "%s endpoint returned HTTP %s; no state change attempted" % (
-                    kind, status)
+            verdict, detail = classify(kind, status, body)
             self._record(name, path, status, verdict, detail)
 
     def authenticated_rest(self):

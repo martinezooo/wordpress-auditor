@@ -25,6 +25,7 @@ class CoreFixture(BaseHTTPRequestHandler):
     requests = []
     leak = True
     fake_200 = False
+    alternate_leak = True
 
     def log_message(self, *_):
         pass
@@ -39,7 +40,25 @@ class CoreFixture(BaseHTTPRequestHandler):
         self.__class__.requests.append(("GET", self.path))
         path = urlsplit(self.path).path
         q = parse_qs(urlsplit(self.path).query)
-        if path == "/":
+        if path == "/" and "rest_route" in q:
+            route = q.get("rest_route", [""])[0]
+            if not self.alternate_leak:
+                self.respond(403, b'{"code":"rest_forbidden"}', "application/json")
+            elif route == "/wp/v2/posts" and q.get("status") == ["private"]:
+                self.respond(200, json.dumps([{"id": 91, "status": "private",
+                    "content": {"rendered": SECRET_BODY}}]).encode(), "application/json")
+            elif route == "/wp/v2/comments" and q.get("status") == ["hold"]:
+                self.respond(200, json.dumps([{"id": 92, "status": "hold",
+                    "content": {"rendered": SECRET_BODY}}]).encode(), "application/json")
+            elif route == "/wp/v2/users" and q.get("context") == ["edit"]:
+                self.respond(200, json.dumps([{"id": 93, "email": SECRET_PII,
+                    "roles": ["administrator"]}]).encode(), "application/json")
+            elif route == "/wp/v2/settings":
+                self.respond(200, json.dumps({"users_can_register": True,
+                    "default_role": "administrator"}).encode(), "application/json")
+            else:
+                self.respond(404)
+        elif path == "/":
             self.respond(200, b'<html><form action="/wp-comments-post.php" method="post">'
                            b'<input name="comment_post_ID" value="7"></form></html>',
                            "text/html")
@@ -122,9 +141,10 @@ class CoreScenarioTests(unittest.TestCase):
         CoreFixture.requests = []
         CoreFixture.leak = True
         CoreFixture.fake_200 = False
+        CoreFixture.alternate_leak = True
 
     def test_9_core_scenarios_and_private_disclosure_classification(self):
-        a = Auditor(self.url, limit=12)
+        a = Auditor(self.url, limit=9)
         audit_wordpress_core(a)
         self.assertEqual(len(a.results), 9)
         classified = [r for r in a.results if r.confidence == "confirmed"]
@@ -219,6 +239,45 @@ class CoreScenarioTests(unittest.TestCase):
                       if r.name == "WP public comment configuration")
         self.assertEqual(result.visibility, "commenting-enabled")
         self.assertEqual(result.severity, "INFO")
+
+    def test_alternate_rest_finds_core_private_exposures_and_high_risk_registration(self):
+        a = Auditor(self.url, limit=35)
+        audit_wordpress_core(a)
+        alternates = [r for r in a.results if r.name.startswith("WP alternate REST")]
+        self.assertEqual(len(alternates), 4)
+        self.assertEqual(
+            {r.severity for r in alternates}, {"MEDIUM", "HIGH"})
+        self.assertTrue(any(r.name == "WP alternate REST administrative settings"
+                            and r.severity == "HIGH" for r in alternates))
+        self.assertNotIn(SECRET_PII, json.dumps([r.__dict__ for r in a.results]))
+        self.assertNotIn(SECRET_BODY, json.dumps([r.__dict__ for r in a.results]))
+        self.assertTrue(all(m == "GET" for m, _ in CoreFixture.requests))
+
+    def test_sensitive_artifact_scan_runs_before_large_discovery_queue(self):
+        a = Auditor(self.url, limit=180)
+        a.discover(full=True, payload_limit=8, probe_discovered=True)
+        phases = [p["name"] for p in a.phase_stats]
+        a_idx = phases.index("WordPress sensitive artifacts / debug logs")
+        q_idx = phases.index("New and previously discovered URL verification")
+        self.assertLess(a_idx, q_idx)
+        self.assertEqual(a.phase_stats[a_idx]["state"], "done")
+        self.assertTrue(any(r.name.startswith("WordPress artifact ")
+                            for r in a.results))
+        self.assertLessEqual(a.request_count, a.limit)
+
+    def test_alt_rest_denied_has_no_findings(self):
+        CoreFixture.alternate_leak = False
+        a = Auditor(self.url, limit=35)
+        audit_wordpress_core(a)
+        alternates = [r for r in a.results if r.name.startswith("WP alternate REST")]
+        self.assertEqual(len(alternates), 4)
+        self.assertTrue(all(r.severity == "INFO" for r in alternates))
+
+    def test_alternate_rest_soft404_is_not_an_exposure(self):
+        for rule in READ_RULES:
+            if rule.check_id in ("WP-64", "WP-65", "WP-66", "WP-67"):
+                state, _ = evaluate(rule, 200, b"<html>WordPress Login</html>")
+                self.assertEqual(state, "not-confirmed")
 
     def test_budget_never_exceeded(self):
         a = Auditor(self.url, limit=4)

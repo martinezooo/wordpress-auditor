@@ -146,6 +146,14 @@ CHECKS = [
           ("WP private comment edit fields",), WP_REST),
     Check("WP-63", "Comments", "Published post comment settings from REST", "automatic",
           ("WP public comment configuration",), WP_REST),
+    Check("WP-64", "Core Misconfig", "Alternate rest_route private posts exposure", "automatic",
+          ("WP alternate REST private posts",), WP_REST),
+    Check("WP-65", "Core Misconfig", "Alternate rest_route moderated comments", "automatic",
+          ("WP alternate REST moderated comments",), WP_REST),
+    Check("WP-66", "Core Misconfig", "Alternate rest_route private users", "automatic",
+          ("WP alternate REST private user fields",), WP_REST),
+    Check("WP-67", "Core Misconfig", "Alternate rest_route admin settings", "automatic",
+          ("WP alternate REST administrative settings",), WP_REST),
 ]
 
 MANUAL_REASON = {

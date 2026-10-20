@@ -488,6 +488,14 @@ class Auditor:
                     enabled=full and self.limit >= 55,
                     reason="requires smart/full mode and at least 55 request budget")
 
+        # Protect core security checks from large discovery/wordlist queues.
+        def _artifacts():
+            from .wp_checks import check_exposures
+            check_exposures(self)
+        self._phase("WordPress sensitive artifacts / debug logs", _artifacts,
+                    enabled=full and self.limit >= 80,
+                    reason="requires smart/full mode and at least 80 request budget")
+
         def _crawl_and_inspect():
             self.discover_ajax(
                 probe=ajax_probe,
@@ -517,12 +525,6 @@ class Auditor:
                 max_cases=min(300 if deep else 200 if full else 8, capacity))
         self._phase("New and previously discovered URL verification", _discovered,
                     enabled=probe_discovered, reason="disabled by --no-probe-discovered")
-
-        def _artifacts():
-            from .wp_checks import check_exposures
-            check_exposures(self)
-        self._phase("WordPress sensitive artifacts / debug logs", _artifacts,
-                    enabled=full, reason="requires smart/full mode")
 
         self._phase("Path/header payload comparisons",
                     lambda: setattr(self, "payload_cases",

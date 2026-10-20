@@ -94,6 +94,20 @@ Only a JSON WordPress object
 with a numeric ID, matching private status or sensitive field, confirms
 exposure. HTTP 200 with a login/soft-404 page does not.
 
+Additional anonymous checks exercise WordPress REST through the alternative
+?rest_route= channel for private posts, moderated comments, user edit
+fields and site settings. This can reveal inconsistent WAF routing or
+misconfigured permission callbacks, but a response alone never proves bypass.
+The standard and alternate routes share the global request budget.
+
+The scanner distinguishes real registration, reset, multisite signup,
+installer and database repair forms from HTTP 200 soft-404 pages. It never
+submits registration forms, activation keys, password resets, installation
+forms or database repair actions. It also probes whether the direct
+wp-config.php endpoint accidentally serves PHP source rather than executing
+it; response content is suppressed in reports. These core checks run before
+the large discovered-URL queue.
+
 It also checks sampled public post comment settings. Comments being enabled,
 an XML-RPC method being listed, or a REST route advertising POST are
 capabilities, not vulnerabilities. The generated core-operations.md groups

@@ -29,6 +29,10 @@ READ_RULES = (
     ReadRule("WP-61", "WP spam comment moderation", "/wp-json/wp/v2/comments?status=spam&per_page=1", "comment", "spam"),
     ReadRule("WP-62", "WP private comment edit fields", "/wp-json/wp/v2/comments?context=edit&per_page=1", "comment-edit"),
     ReadRule("WP-63", "WP public comment configuration", "/wp-json/wp/v2/posts?per_page=2&_fields=id,comment_status,ping_status,status", "comment-settings"),
+    ReadRule("WP-64", "WP alternate REST private posts", "/?rest_route=/wp/v2/posts&status=private&per_page=1", "post", "private"),
+    ReadRule("WP-65", "WP alternate REST moderated comments", "/?rest_route=/wp/v2/comments&status=hold&per_page=1", "comment", "hold"),
+    ReadRule("WP-66", "WP alternate REST private user fields", "/?rest_route=/wp/v2/users&context=edit&per_page=1", "user-edit"),
+    ReadRule("WP-67", "WP alternate REST administrative settings", "/?rest_route=/wp/v2/settings", "settings"),
 )
 PRIVATE_STATUS = frozenset({"draft", "private", "pending", "hold", "spam"})
 SENSITIVE_COMMENT_KEYS = ("author_email", "author_ip", "author_user_agent")
@@ -57,6 +61,24 @@ def evaluate(rule, status, body):
         return "auth-required", "Anonymous access restricted; expected for private WordPress data"
     if status != 200:
         return "not-confirmed", "Endpoint returned HTTP %s; disclosure not verified" % status
+    if rule.kind == "settings":
+        # REST /wp/v2/settings is a JSON object, unlike collections.
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            data = None
+        if isinstance(data, dict):
+            if (data.get("users_can_register") is True and
+                    data.get("default_role") == "administrator"):
+                return "confirmed-unsafe-wp-registration-default-role", (
+                    "Alternate REST disclosed signup enabled with administrator default role; "
+                    "no account registered")
+            if any(key in data for key in ("siteurl", "default_role",
+                                            "users_can_register", "admin_email")):
+                return "review-public-wp-settings", (
+                    "Administrative WordPress settings accessible through rest_route; "
+                    "data withheld")
+        return "not-confirmed", "No administrative WordPress settings object confirmed"
     rows = _records(body)
     if rows is None:
         return "not-confirmed", "HTTP 200 did not return a WordPress JSON object list"
@@ -83,6 +105,21 @@ def evaluate(rule, status, body):
                 "%d private-status object IDs returned anonymously, but no unpublished "
                 "text verified; manual review required" % len(leaked))
         return "not-confirmed", "No matching private WordPress status found in first page"
+    if rule.kind == "user-edit":
+        keys = ("email", "username", "roles", "capabilities",
+                "extra_capabilities")
+        disclosed = [
+            obj for obj in valid
+            if any(
+                isinstance(obj.get(key), str) and bool(obj[key].strip())
+                or isinstance(obj.get(key), (dict, list)) and bool(obj[key])
+                for key in keys)
+        ]
+        if disclosed:
+            return "confirmed-public-user-private-fields", (
+                "%d user object(s) exposed private REST edit-context fields "
+                "via rest_route; identifiers and values withheld" % len(disclosed))
+        return "not-confirmed", "No private WordPress user fields confirmed"
     if rule.kind == "comment-edit":
         leaked = [obj for obj in valid if any(
             isinstance(obj.get(k), str) and obj[k].strip()

@@ -23,6 +23,7 @@ EXAMPLE_SECRET = "TEST_ONLY_DUMMY_PASS_NEVER_REAL"
 
 class WordPressArtifacts(BaseHTTPRequestHandler):
     requests = []
+    expose_config_source = False
 
     def log_message(self, *_):
         return
@@ -30,7 +31,11 @@ class WordPressArtifacts(BaseHTTPRequestHandler):
     def do_GET(self):
         self.__class__.requests.append(self.path)
         status, content = 404, b"Not found"
-        if self.path == "/wp-config.php.bak":
+        if self.path == "/wp-config.php" and type(self).expose_config_source:
+            status = 200
+            content = (b"<?php define('DB_PASSWORD', '" + EXAMPLE_SECRET.encode()
+                       + b"'); ?>")
+        elif self.path == "/wp-config.php.bak":
             status = 200
             content = (b"<?php define('DB_NAME', 'test'); define('DB_PASSWORD', '" +
                        EXAMPLE_SECRET.encode() + b"');")
@@ -74,10 +79,11 @@ class TestSeverityPresentation(unittest.TestCase):
 
     def setUp(self):
         WordPressArtifacts.requests = []
+        WordPressArtifacts.expose_config_source = False
 
     def test_signature_confirmed_high_medium_low_and_no_leaks(self):
-        a = Auditor(self.url, limit=12, delay=0)
         from wordpress_auditor.wp_checks import CHECKS
+        a = Auditor(self.url, limit=len(CHECKS) + 1, delay=0)
         self.assertEqual(check_exposures(a), len(CHECKS))
         verified = {r.severity: r for r in a.results if r.confidence == "confirmed"}
         self.assertEqual(set(verified), {"HIGH", "MEDIUM", "LOW"})
@@ -105,6 +111,24 @@ class TestSeverityPresentation(unittest.TestCase):
         self.assertNotIn("FIXTURE_PLACEHOLDER", json.dumps(
             [r.__dict__ for r in a.results]))
 
+    def test_direct_php_config_content_is_a_verified_high_exposure(self):
+        # First, the direct wp-config.php URL is harmless when PHP executes
+        # and returns a blank or generic response.
+        a = Auditor(self.url, limit=3)
+        check_exposures(a)
+        config = next(r for r in a.results if r.url.endswith("/wp-config.php"))
+        self.assertEqual(config.severity, "INFO")
+
+    def test_direct_config_source_exposure_is_high_without_secret_in_report(self):
+        WordPressArtifacts.expose_config_source = True
+        a = Auditor(self.url, limit=3)
+        check_exposures(a)
+        result = next(r for r in a.results if r.url.endswith("/wp-config.php"))
+        self.assertEqual(result.severity, "HIGH")
+        self.assertEqual(result.confidence, "confirmed")
+        self.assertIn("source served publicly", result.detail)
+        self.assertNotIn(EXAMPLE_SECRET, json.dumps([r.__dict__ for r in a.results]))
+
     def test_soft404_and_access_denied_do_not_make_severity(self):
         a = Auditor(self.url, limit=12)
         check_exposures(a)
@@ -127,7 +151,8 @@ class TestSeverityPresentation(unittest.TestCase):
                          "REVIEW")
 
     def test_live_printer_shows_colored_confirmed_finding(self):
-        a = Auditor(self.url, limit=9)
+        from wordpress_auditor.wp_checks import CHECKS
+        a = Auditor(self.url, limit=len(CHECKS) + 1)
         sink = io.StringIO()
         live = LivePrinter(enabled=True, color=True, every=2, stream=sink)
         a.finding_callback = live.finding
@@ -142,7 +167,8 @@ class TestSeverityPresentation(unittest.TestCase):
         self.assertNotIn(EXAMPLE_SECRET, data)
 
     def test_no_ansi_from_plain_markdown_and_json(self):
-        a = Auditor(self.url, limit=9)
+        from wordpress_auditor.wp_checks import CHECKS
+        a = Auditor(self.url, limit=len(CHECKS) + 1)
         check_exposures(a)
         from wordpress_auditor.reporting import format_markdown
         rows = [r.__dict__ for r in a.results]

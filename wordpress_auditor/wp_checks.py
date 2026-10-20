@@ -5,7 +5,11 @@ import hashlib
 import re
 
 CHECKS = (
+    # Detect source delivery, not whether PHP execution succeeds.
+    ("/wp-config.php", "config"),
     ("/wp-config.php.bak", "config"),
+    ("/wp-config.php.orig", "config"),
+    ("/wp-config.php.txt", "config"),
     ("/wp-config.php~", "config"),
     ("/wp-config.php.save", "config"),
     ("/wp-config.php.old", "config"),
@@ -55,7 +59,9 @@ def check_exposures(auditor):
         if status == 200 and hashlib.sha256(body).digest() != control_hash:
             if kind == "config" and CONFIG_SIGNAL.search(body):
                 state = "confirmed-public-config-backup"
-                evidence = "WordPress configuration directive in public backup; content suppressed"
+                evidence = ("WordPress configuration source served publicly; values suppressed"
+                            if path == "/wp-config.php" else
+                            "WordPress configuration directive in public backup; values suppressed")
             elif kind == "env" and ENV_SIGNAL.search(body):
                 state = "confirmed-public-env-config"
                 evidence = "Public environment configuration with WordPress-related settings; values suppressed"
