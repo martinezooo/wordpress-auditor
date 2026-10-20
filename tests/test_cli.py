@@ -81,10 +81,23 @@ class Fixture(BaseHTTPRequestHandler):
         content = self.rfile.read(int(self.headers.get("Content-Length", "0")))
         self.__class__.requests[-1] += (content,)
         if self.path == "/xmlrpc.php":
-            self.reply(200, b"<methodResponse><params><param><value><array><data>"
-                b"<value><string>pingback.ping</string></value>"
-                b"<value><string>system.multicall</string></value>"
-                b"</data></array></value></param></params></methodResponse>")
+            if b"system.listMethods" in content:
+                self.reply(200, b"<methodResponse><params><param><value><array><data>"
+                    b"<value><string>pingback.ping</string></value>"
+                    b"<value><string>system.multicall</string></value>"
+                    b"</data></array></value></param></params></methodResponse>")
+            elif b"system.getCapabilities" in content:
+                self.reply(200, b"<methodResponse><params><param><value><struct><member>"
+                    b"<name>xmlrpc</name><value><string>1.0</string></value>"
+                    b"</member></struct></value></param></params></methodResponse>")
+            elif b"wordpressAuditor.unknownReadOnlyMethod" in content:
+                self.reply(200, b"<methodResponse><fault><value><struct><member>"
+                    b"<name>faultCode</name><value><int>-32601</int></value>"
+                    b"</member></struct></value></fault></methodResponse>")
+            else:
+                self.reply(400, b"<methodResponse><fault><value><struct><member>"
+                    b"<name>faultCode</name><value><int>-32700</int></value>"
+                    b"</member></struct></value></fault></methodResponse>")
         elif self.path == "/wp-comments-post.php":
             self.reply(302, headers={"Location": "/post/9/#comment-44"})
         elif self.path == "/wp-json/wp/v2/comments":
@@ -224,11 +237,13 @@ class TestAuditor(unittest.TestCase):
         self.assertEqual(body["comment"], ["form-unique-222"])
 
     def test_xmlrpc_get_405_post_list(self):
-        a = Auditor(self.url, limit=4)
+        a = Auditor(self.url, limit=6)
         a.xmlrpc()
-        self.assertEqual([r[0] for r in Fixture.requests], ["GET", "POST"])
-        self.assertIn("pingback.ping", a.results[-1].detail)
-        self.assertIn("system.multicall", a.results[-1].detail)
+        self.assertEqual([r[0] for r in Fixture.requests], ["GET", "POST", "POST", "POST", "POST"])
+        self.assertTrue(any("pingback.ping" in r.detail for r in a.results))
+        self.assertTrue(any("system.multicall" in r.detail for r in a.results))
+        self.assertTrue(any("fault code -32601" in r.detail for r in a.results))
+        self.assertTrue(any("fault code -32700" in r.detail for r in a.results))
         self.assertEqual(parse_xmlrpc_response(b"<!DOCTYPE x><x/>"), "rejected unsafe XML")
 
     def test_comparison_login_page_is_not_bypass(self):
@@ -256,6 +271,93 @@ class TestAuditor(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             main(["--url", self.url, "--max-requests", "2"])
         self.assertFalse(any(r[0] == "POST" for r in Fixture.requests))
+
+    def test_summary_is_default_and_no_json_dump(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main(["--url", self.url, "--max-requests", "3"])
+        value = out.getvalue()
+        self.assertIn("Requests 3/3", value)
+        self.assertIn("AJAX actions", value)
+        self.assertNotIn('"name":', value)
+        self.assertLess(len(value.splitlines()), 10)
+
+    def test_explicit_json_details(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main(["--url", self.url, "--max-requests", "2", "--format", "json"])
+        rows = json.loads(out.getvalue())
+        self.assertTrue(rows)
+        self.assertIn("visibility", rows[0])
+
+    def test_report_json_saved_but_terminal_is_summary(self):
+        import tempfile
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            output = os.path.join(tmp, "nested", "report.json")
+            terminal = io.StringIO()
+            with contextlib.redirect_stdout(terminal):
+                main(["--url", self.url, "--max-requests", "3", "--output", output])
+            self.assertIn("Saved full report", terminal.getvalue())
+            self.assertNotIn('"name":', terminal.getvalue())
+            with open(output, encoding="utf-8") as f:
+                rows = json.load(f)
+            self.assertIsInstance(rows, list)
+            self.assertTrue(os.path.isfile(os.path.join(tmp, "nested", "wordlist.txt")))
+
+    def test_full_scans_more_surface_and_read_only_xmlrpc(self):
+        a = Auditor(self.url, limit=55)
+        a.discover(full=True)
+        observed = [urlsplit(row[1]).path for row in Fixture.requests]
+        for endpoint in ("/wp-json/wp/v2/users", "/wp-json/oembed/1.0/",
+                         "/robots.txt", "/wp-sitemap.xml", "/wp-login.php",
+                         "/wp-json/wc/store/v1/products"):
+            self.assertIn(endpoint, observed)
+        posts = [row for row in Fixture.requests if row[0] == "POST"]
+        self.assertTrue(posts)
+        self.assertTrue(all(row[1] == "/xmlrpc.php" for row in posts))
+        self.assertLessEqual(a.request_count, a.limit)
+        self.assertGreater(len(a.results), 15)
+
+    def test_xmlrpc_budget_does_not_overrun(self):
+        a = Auditor(self.url, limit=2)
+        a.xmlrpc()
+        self.assertEqual(a.request_count, 2)
+        self.assertEqual(len(Fixture.requests), 2)
+
+    def test_xmlrpc_404_does_not_post(self):
+        a = Auditor(self.url, limit=4)
+        a.request = lambda path, method="GET", data=None, headers=None: (404, b"", {})
+        a.xmlrpc()
+        self.assertEqual(len(a.results), 1)
+        self.assertNotEqual(a.results[0].status, 200)
+
+    def test_summary_scrubs_query_tokens(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main(["--url", self.url + "/?token=very-secret", "--max-requests", "1"])
+        self.assertNotIn("very-secret", out.getvalue())
+        self.assertNotIn("token=", out.getvalue())
+
+    def test_full_keeps_ajax_discovery_and_budget(self):
+        a = Auditor(self.url, limit=60)
+        a.discover(full=True)
+        self.assertIn("form_lookup", a.ajax_actions)
+        self.assertLessEqual(a.request_count, a.limit)
+        self.assertTrue(any(r.name.startswith("XML-RPC") for r in a.results))
+
+    def test_csv_and_markdown_explicit_formats(self):
+        for fmt, expected in (("csv", "name,url,status"), ("md", "| Name | URL |")):
+            captured = io.StringIO()
+            with contextlib.redirect_stdout(captured):
+                main(["--url", self.url, "--max-requests", "2", "--format", fmt])
+            self.assertIn(expected, captured.getvalue())
+
+    def test_invalid_budget_rejected(self):
+        for value in ("0", "-1"):
+            with self.assertRaises(SystemExit):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    main(["--url", self.url, "--max-requests", value])
 
     def test_cli_write_requires_post_id(self):
         with self.assertRaises(SystemExit) as cm:

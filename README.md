@@ -20,8 +20,18 @@ wordpress-auditor --help
 ## Basic usage
 
 ```sh
-# Read-only reconnaissance
-wordpress-auditor --url https://example.invalid --max-requests 20 --delay 0.3
+# Default: compact terminal summary, passive checks, no comment writes
+wordpress-auditor --url https://example.invalid --max-requests 30
+
+# Broader coverage: REST permissions, WooCommerce, XML-RPC faults,
+# admin access differential, sitemap, robots and AJAX discovery
+wordpress-auditor --url https://example.invalid --full --max-requests 60
+
+# Save full evidence to a file without filling the console with JSON
+wordpress-auditor --url https://example.invalid --full --output ./audit/report.json
+
+# Explicit detailed stdout (JSON/CSV/Markdown)
+wordpress-auditor --url https://example.invalid --format json
 # Import raw Burp HTTP/1.1 request as base URL and headers; does not replay it
 wordpress-auditor --request request.txt --authorized
 # Search for a marker in comments/reviews, feeds and multilingual HTML
@@ -35,6 +45,19 @@ wordpress-auditor --url https://example.invalid --ajax-probe --wordlist-out ./au
 # Exactly one harmless comment submission to known post ID; no implicit writes
 wordpress-auditor --url https://example.invalid --post-comment --comment-post-id 42 --comment-mode form --marker 'unique-marker'
 ```
+
+The default console view is a short, factual summary, not a JSON array.
+Use --format json, --format csv, or --format md for detailed stdout.
+Using --output report.json writes detailed findings to that file and keeps
+the terminal summary concise. Add --verbose to show individual checks.
+
+--full enables a broader bounded read-only HTTP probe list and also runs
+XML-RPC protocol diagnostics. Those diagnostics use several small POST
+requests, but only for read-only introspection and malformed-method
+error responses: no login, pingback, multicall, brute-force, or DoS.
+Both --full and --xmlrpc consume the global request budget.
+Rate limit with --delay (default 0.2s) and --max-requests (default 60).
+A response code of 200, 302 or 401 alone is not proof of a vulnerability.
 
 HTTP responses are not vulnerabilities. `401/403` indicate access controls;
 `200` or `302` alone does not prove a bypass. Comment write acknowledgement

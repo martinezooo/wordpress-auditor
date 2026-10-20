@@ -243,8 +243,13 @@ class Auditor:
             else:
                 self.comment(post_id, marker or ("wp-audit-" + uuid.uuid4().hex), comment_name,
                              comment_email, mode=comment_mode)
-        if xmlrpc and self.request_count < self.limit:
+        if (xmlrpc or full) and self.request_count < self.limit:
             self.xmlrpc()
+        if full and self.request_count + 3 <= self.limit:
+            comparison = self.compare_403("/wp-admin/")
+            self.add("403 differential /wp-admin/", "/wp-admin/", comparison["comparison"],
+                     detail=comparison["classification"], visibility="requires-review"
+                     if "requires review" in comparison["classification"] else "inconclusive")
         if search_comment and self.request_count < self.limit:
             self.search_comment(search_comment, languages=languages)
         paths = [
@@ -253,7 +258,20 @@ class Auditor:
             "/?feed=comments-rss2", "/comments/feed/",
         ]
         if full or depth > 1:
-            paths += ["/wp-json/wp/v2/pages?per_page=1", "/wp-json/wc/store/v1/products/reviews?per_page=1"]
+            paths += [
+                "/wp-json/wp/v2/", "/wp-json/wp/v2/pages?per_page=1",
+                "/wp-json/wp/v2/users?per_page=1", "/wp-json/wp/v2/types",
+                "/wp-json/wp/v2/taxonomies", "/wp-json/wp/v2/categories?per_page=1",
+                "/wp-json/wp/v2/media?per_page=1", "/wp-json/oembed/1.0/",
+                "/wp-json/wp/v2/settings", "/wp-json/wp/v2/users/me",
+                "/wp-json/wp/v2/plugins", "/?author=1",
+                "/wp-json/wc/store/v1/", "/wp-json/wc/store/v1/products?per_page=1",
+                "/wp-json/wc/v3/orders?per_page=1",
+                "/wp-json/wc/store/v1/products/reviews?per_page=1",
+                "/wp-admin/", "/wp-login.php", "/wp-admin/admin-ajax.php",
+                "/robots.txt", "/wp-sitemap.xml", "/sitemap_index.xml",
+                "/.well-known/security.txt",
+            ]
         for path in paths:
             if self.request_count >= self.limit:
                 break
@@ -317,14 +335,31 @@ class Auditor:
             self.add("HTML marker search", html_path, s, detail=state, visibility=state)
 
     def xmlrpc(self):
+        """Bounded, read-only XML-RPC diagnostic methods. No login, pingback or multicall."""
         path = "/xmlrpc.php"
         s, b, _ = self.request(path)
-        self.add("XML-RPC endpoint", path, s, b)
-        if s in (200, 405) and self.request_count < self.limit:
-            body = b"<?xml version='1.0'?><methodCall><methodName>system.listMethods</methodName><params/></methodCall>"
-            xs, xb, _ = self.request(path, "POST", body, {"Content-Type": "text/xml"})
-            detail = parse_xmlrpc_response(xb) if xb else "no response"
-            self.add("XML-RPC system.listMethods", path, xs, b"", detail)
+        self.add("XML-RPC endpoint", path, s, b, "GET diagnostic (405 is normal)")
+        if s not in (200, 405):
+            return
+        probes = [
+            ("system.listMethods", "system.listMethods", False),
+            ("system.getCapabilities", "system.getCapabilities", False),
+            ("unknown method fault", "wordpressAuditor.unknownReadOnlyMethod", False),
+            ("malformed XML fault", "", True),
+        ]
+        for label, method, malformed in probes:
+            if self.request_count >= self.limit:
+                break
+            if malformed:
+                payload = b"<methodCall><methodName>incomplete"
+            else:
+                payload = ("<?xml version='1.0'?><methodCall><methodName>"
+                           + method + "</methodName><params/></methodCall>").encode("utf-8")
+            status, body, _ = self.request(path, "POST", payload, {"Content-Type": "text/xml"})
+            detail = parse_xmlrpc_response(body) if body else "empty response"
+            if status in (401, 403):
+                detail = "blocked by access controls"
+            self.add("XML-RPC " + label, path, status, detail=detail)
 
     def comment(self, post_id, content, name, email, mode="rest"):
         if isinstance(mode, bool):
