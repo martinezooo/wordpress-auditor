@@ -37,6 +37,8 @@ class Result:
     status: int | None
     visibility: str
     detail: str = ""
+    severity: str = "INFO"
+    confidence: str = "observed"
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -102,6 +104,8 @@ class Auditor:
         self.method_checks = 0
         self.phase_stats = []
         self.progress_callback = None
+        self.request_progress_callback = None
+        self.finding_callback = None
         self.scan_mode = "quick"
         self.payload_candidates = 0
         self.opener = urllib.request.build_opener(
@@ -147,6 +151,9 @@ class Auditor:
                 e.close()
         except Exception as e:
             return None, b"", {"error": type(e).__name__}
+        finally:
+            if self.request_progress_callback:
+                self.request_progress_callback(self, method, report_url(url))
 
     def add(self, name, path, status, body=b"", detail="", visibility=None):
         if visibility:
@@ -163,7 +170,14 @@ class Auditor:
             visibility = "not-evaluated"
         # Response bodies are never copied into reports.
         snippet = sanitize_detail(detail)
-        self.results.append(Result(name, report_url(safe_url(self.base, path)), status, visibility or "unavailable", snippet))
+        from .assessment import assess
+        severity, confidence = assess(name, status, visibility or "unavailable", snippet)
+        result = Result(name, report_url(safe_url(self.base, path)),
+                        status, visibility or "unavailable", snippet,
+                        severity, confidence)
+        self.results.append(result)
+        if self.finding_callback:
+            self.finding_callback(self, result)
 
     def _wordlist_url(self, url):
         if self._allowed(url):
@@ -392,6 +406,12 @@ class Auditor:
                 max_cases=min(300 if deep else 200 if full else 8, capacity))
         self._phase("New and previously discovered URL verification", _discovered,
                     enabled=probe_discovered, reason="disabled by --no-probe-discovered")
+
+        def _artifacts():
+            from .wp_checks import check_exposures
+            check_exposures(self)
+        self._phase("WordPress sensitive artifacts / debug logs", _artifacts,
+                    enabled=full, reason="requires smart/full mode")
 
         self._phase("Path/header payload comparisons",
                     lambda: setattr(self, "payload_cases",

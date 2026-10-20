@@ -77,6 +77,29 @@ wordpress-auditor --url https://example.invalid --ajax-probe --wordlist-out ./au
 wordpress-auditor --url https://example.invalid --post-comment --comment-post-id 42 --comment-mode form --marker 'unique-marker'
 ```
 
+## Colored live results (Kali, Linux, macOS)
+
+Interactive terminals use severity colors, and live progress is shown every
+10 requests. A long URL-discovery pass is no longer silent.
+
+- HIGH (red): verified public WordPress configuration backup with configuration
+  directives. Credentials themselves are never printed.
+- MEDIUM (yellow): verified public WordPress/PHP diagnostic log content.
+- LOW (cyan): verified WordPress uploads directory listing.
+- REVIEW (magenta): noteworthy differences, server errors, or OAST
+  verification required, NOT a confirmed vulnerability.
+- INFO (cyan): standard endpoint observation. Green DONE means that
+  the scan phase completed, NOT that exploitation succeeded.
+
+The severities are evidence-gated, not automatically calculated CVSS scores.
+They require WordPress-specific content signatures and are not inferred from
+200/403 alone.
+
+Useful flags: --progress, --progress-every 5, --verbose, --color always,
+--no-color. The NO_COLOR environment variable disables ANSI colors. Report
+files JSON, CSV and Markdown stay plain and provide severity and confidence
+as separate fields. Tests only contact local mock servers.
+
 ## What happens during a normal scan?
 
 The default scan is now smart rather than the old limited quick mode. The CLI

@@ -50,17 +50,24 @@ def observations(auditor, rows):
         if methods:
             notes.append("XML-RPC method discovery: " + methods)
         else:
-            notes.append("XML-RPC: %d protocol responses, without authentication "
-                         "or pingback exploitation." % len(xmlrpc))
-    candidates = [
-        r for r in rows if (
-            "requires-review" in r["detail"] or
-            r["visibility"] in ("confirmed-public", "confirmed-authenticated", "server-error")
-        ) and not (
-            r["status"] == 501 and r["name"].startswith("HTTP method ")
-        )
-    ]
-    notes.append("No vulnerability has been independently confirmed by this scan.")
+            first = xmlrpc[0]
+            code = first["status"]
+            if code not in (200, 405):
+                notes.append("XML-RPC: initial GET returned HTTP %s; "
+                             "further method probes were skipped." % code)
+            else:
+                notes.append("XML-RPC: %d read-only protocol response(s); "
+                             "no authentication, pingback or multicall invoked." % len(xmlrpc))
+    candidates = [r for r in rows
+                  if r.get("severity", "INFO") != "INFO"]
+    verified = [r for r in rows
+                if r.get("confidence") == "confirmed"
+                and r.get("severity") in ("HIGH", "MEDIUM", "LOW")]
+    if verified:
+        notes.append("%d WordPress-specific exposures verified by content signatures; "
+                     "review raw server behavior before reporting." % len(verified))
+    else:
+        notes.append("No vulnerability has been independently confirmed by this scan.")
     return notes, candidates
 
 
@@ -78,6 +85,9 @@ def format_terminal(auditor, rows, verbose=False, target=None):
         (len(auditor.wordlist), len(unique_verified), unverified),
         "AJAX actions: %d  |  Payload variants %d  |  Method probes: %d" %
         (len(auditor.ajax_actions), auditor.payload_cases, auditor.method_checks),
+        "SEVERITY: " + "  ".join("%s:%d" % (level, sum(
+            r.get("severity", "INFO") == level for r in rows))
+            for level in ("HIGH", "MEDIUM", "LOW", "REVIEW", "INFO")),
         "",
         "WHAT THE ENGINE ACTUALLY DID",
     ]
@@ -113,13 +123,16 @@ def format_terminal(auditor, rows, verbose=False, target=None):
         if examples:
             lines.append("  - %s examples: %s" % (status, ", ".join(examples)))
     if candidates:
-        lines += ["", "FOLLOW-UP / needs manual review (%d)" % len(candidates)]
-        for r in candidates[:6]:
+        lines += ["", "FINDINGS / ACTIONABLE OBSERVATIONS (%d)" % len(candidates)]
+        priority = {"HIGH": 0, "MEDIUM": 1, "LOW": 2, "REVIEW": 3, "INFO": 4}
+        for r in sorted(candidates, key=lambda row: priority.get(
+                row.get("severity", "INFO"), 4))[:8]:
             path = urlsplit(r["url"]).path
-            lines.append("  - [%s] %s %s: %s" %
-                         (r["status"], r["name"][:32], path, r["detail"][:110]))
-        if len(candidates) > 6:
-            lines.append("  - ... %d more in JSON" % (len(candidates) - 6))
+            lines.append("  - [%s] %s %s (HTTP %s): %s" %
+                         (r.get("severity", "REVIEW"), r["name"][:32], path,
+                          r["status"], r["detail"][:110]))
+        if len(candidates) > 8:
+            lines.append("  - ... %d more in JSON" % (len(candidates) - 8))
     lines += ["", "COVERAGE & LIMITATIONS"]
     if unverified:
         lines.append("  - %d discovered URL paths were not fetched "
@@ -134,6 +147,9 @@ def format_terminal(auditor, rows, verbose=False, target=None):
                      (auditor.limit - auditor.request_count))
     if auditor.scan_mode == "quick":
         lines.append("  - Quick mode omits deeper REST, XML-RPC and method checks.")
+    lines.append("  - Severity labels are evidence-gated; HTTP 200/403 alone is INFO.")
+    lines.append("  - HIGH/MEDIUM/LOW reflect confirmed WordPress artifact content, "
+                 "REVIEW is NOT a confirmed vulnerability.")
     lines.append("  - Anonymous access was not compared to all WordPress roles.")
     lines.append("  - No XSS/SQLi/IDOR is confirmed from HTTP status differences.")
     if not any(r["name"] == "opt-in SSRF OAST injection" for r in rows):

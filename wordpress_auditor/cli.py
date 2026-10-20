@@ -12,6 +12,7 @@ from .probes import safe_candidate
 from .auditor import Auditor, parse_burp, report_url
 from .probes import ssrf_oast_probe
 from .reporting import format_terminal, format_markdown
+from .console import LivePrinter, supports_color, color_summary
 
 
 def summarize(auditor, rows, verbose=False):
@@ -24,15 +25,16 @@ def render_details(rows, fmt):
         return json.dumps(rows, indent=2, ensure_ascii=False)
     if fmt == "csv":
         s = io.StringIO()
-        w = csv.DictWriter(s, fieldnames=["name", "url", "status", "visibility", "detail"])
+        w = csv.DictWriter(s, fieldnames=["name", "url", "status", "visibility", "detail",
+                                           "severity", "confidence"])
         w.writeheader()
         w.writerows(rows)
         return s.getvalue()
     if fmt == "md":
-        out = "| Name | URL | Status | Visibility | Detail |\n|---|---|---:|---|---|\n"
+        out = "| Name | URL | Status | Severity | Confidence | Visibility | Detail |\n|---|---|---:|---|---|---|---|\n"
         for r in rows:
             values = [str(r[k]).replace("|", "\\|").replace("\n", " ") for k in
-                      ("name", "url", "status", "visibility", "detail")]
+                      ("name", "url", "status", "severity", "confidence", "visibility", "detail")]
             out += "| " + " | ".join(values) + " |\n"
         return out
     raise ValueError("Unsupported detailed format: " + fmt)
@@ -66,6 +68,12 @@ def main(argv=None):
                    help="small preliminary scan instead of the default smart audit")
     p.add_argument("--progress", action="store_true",
                    help="stream scan phase progress to stderr (TTY enables automatically)")
+    p.add_argument("--progress-every", type=int, default=10,
+                   help="show progress every N HTTP requests (default 10)")
+    p.add_argument("--color", choices=("auto", "always", "never"), default="auto",
+                   help="ANSI colors in interactive terminal (default auto)")
+    p.add_argument("--no-color", action="store_const", const="never", dest="color",
+                   help="disable ANSI colors even on a TTY")
     p.add_argument("--deep", action="store_true",
                    help="larger in-scope GET/header payload suite (implies --full)")
     p.add_argument("--payloads", metavar="ZIP_OR_DIR",
@@ -101,6 +109,8 @@ def main(argv=None):
         a.payload_limit = 160 if a.deep else 36 if a.full else 6
     if a.max_requests < 1 or a.delay < 0 or a.timeout <= 0:
         p.error("--max-requests must be positive, --delay nonnegative, --timeout positive")
+    if a.progress_every < 1:
+        p.error("--progress-every must be positive")
     if not 0 <= a.payload_limit <= 1000:
         p.error("--payload-limit must be between 0 and 1000")
     if a.ssrf and not (a.collaborator_url and a.ssrf_path and a.ssrf_param):
@@ -123,15 +133,13 @@ def main(argv=None):
         url = a.url
     auditor = Auditor(url, headers, a.cookie, a.proxy, limit=a.max_requests, delay=a.delay, timeout=a.timeout,
                       authorized=a.authorized, scheme=a.scheme)
-    if a.progress or (sys.stderr.isatty() and a.format == "summary"):
-        def progress(event, title, auditor, phase=None):
-            if event == "start":
-                print("  => " + title + " ...", file=sys.stderr, flush=True)
-            elif phase is not None:
-                print("     %d requests; %d results; budget %d/%d" %
-                      (phase["requests"], phase["checks"], auditor.request_count, auditor.limit),
-                      file=sys.stderr, flush=True)
-        auditor.progress_callback = progress
+    live = a.progress or a.verbose or (sys.stderr.isatty() and a.format == "summary")
+    presenter = LivePrinter(
+        enabled=live, color=supports_color(sys.stderr, a.color),
+        every=a.progress_every, verbose=a.verbose, stream=sys.stderr)
+    auditor.progress_callback = presenter.phase if live else None
+    auditor.request_progress_callback = presenter.request if live else None
+    auditor.finding_callback = presenter.finding if live else None
     if a.payloads:
         # Validate local payload input before contacting any target.
         from .probes import get_payloads
@@ -192,14 +200,14 @@ def main(argv=None):
         os.makedirs(os.path.dirname(os.path.abspath(a.output)), exist_ok=True)
         with open(a.output, "w", encoding="utf-8") as f:
             f.write(render_details(rows, output_fmt))
-        print(summary)
+        print(color_summary(summary, supports_color(sys.stdout, a.color)))
         print("Saved full report: " + a.output)
     elif a.format == "summary":
         report_path = os.path.join(os.path.dirname(os.path.abspath(wordlist_out)),
                                    "latest-report.json")
         with open(report_path, "w", encoding="utf-8") as f:
             f.write(render_details(rows, "json"))
-        print(summary)
+        print(color_summary(summary, supports_color(sys.stdout, a.color)))
         print("Detailed JSON: " + report_path)
     else:
         print(render_details(rows, a.format))
