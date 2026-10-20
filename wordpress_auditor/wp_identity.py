@@ -17,6 +17,16 @@ from xml.sax.saxutils import escape
 
 from .auditor import parse_xmlrpc_response
 
+# Real WordPress admin profile uses form#your-profile. Generic HTTP 200 and
+# "wp-admin" strings in navigation or soft-404 content are not proof of login.
+WP_PROFILE_FORM = re.compile(
+    rb"<form\b[^>]*\bid\s*=\s*['\"](?:your-profile|profile-page)['\"]",
+    re.I,
+)
+WP_LOGIN_FORM = re.compile(
+    rb"<form\b[^>]*\bid\s*=\s*['\"]loginform['\"]", re.I,
+)
+
 
 def _json(body):
     try:
@@ -231,7 +241,12 @@ class WordPressIdentity:
         auth = self.credentials.app_header()
         # Supplied session cookies/nonce may work, but are never considered
         # proof of identity unless /users/me returns a real WP user id.
-        if not auth and not a.authorized:
+        # --login-user makes the scan credential-aware, but no REST
+        # Authorization or cookie has been established until the later
+        # single_login phase. Do not send a fake authenticated REST request.
+        supplied_session = any(k.lower() in ("cookie", "authorization", "x-wp-nonce")
+                               for k in a.headers)
+        if not auth and not (a.authorized and supplied_session):
             return
         path = "/wp-json/wp/v2/users/me?context=edit"
         extra = {"Authorization": auth} if auth else {}
@@ -422,7 +437,8 @@ class WordPressIdentity:
                     "/wp-admin/profile.php",
                     headers={"Cookie": cookie + "; " + "; ".join(values)},
                     include_credentials=True)
-                ok = st == 200 and b"wp-admin" in b.lower() and b"loginform" not in b.lower()
+                ok = (st == 200 and bool(WP_PROFILE_FORM.search(b))
+                      and not WP_LOGIN_FORM.search(b))
                 self._record("WP login session verification", "/wp-admin/profile.php", st,
                              "authenticated-identity-confirmed" if ok else "auth-not-confirmed",
                              "Profile page reached with test session; session cookie suppressed"

@@ -27,6 +27,7 @@ PRIVATE_EMAIL = "private-admin-email@example.invalid"
 class WPHandler(BaseHTTPRequestHandler):
     calls = []
     allow_sensitive = False
+    fake_profile = False
 
     def log_message(self, *_):
         pass
@@ -98,7 +99,11 @@ class WPHandler(BaseHTTPRequestHandler):
             self.send(200, b'<form id="loginform" action="wp-login.php" method="post"></form>')
         elif path == "/wp-admin/profile.php":
             if "wordpress_logged_in_abc=fixture_session" in self.headers.get("Cookie",""):
-                self.send(200, b'<div id="wp-admin">Profile</div>')
+                if type(self).fake_profile:
+                    self.send(200, b'<html>wp-admin profile is unavailable</html>')
+                else:
+                    self.send(200, b'<form id="your-profile" action="profile.php">'
+                                   b'<h1>Profile</h1></form>')
             else:
                 self.send(302, headers={"Location":"/wp-login.php"})
         elif path == "/wp-admin/install.php":
@@ -178,6 +183,7 @@ class WordPressIdentityTests(unittest.TestCase):
     def setUp(self):
         WPHandler.calls=[]
         WPHandler.allow_sensitive=False
+        WPHandler.fake_profile=False
 
     def _audit(self, *, limit=220, credentials=None):
         a=Auditor(self.url,limit=limit,delay=0,
@@ -387,6 +393,30 @@ class WordPressIdentityTests(unittest.TestCase):
         self.assertEqual(a.results[-1].visibility,"authenticated-identity-confirmed")
         self.assertNotIn(LOGIN_PASSWORD,json.dumps([r.__dict__ for r in a.results]))
         self.assertNotIn("fixture_session",json.dumps([r.__dict__ for r in a.results]))
+
+    def test_profile_soft404_is_not_a_verified_login(self):
+        WPHandler.fake_profile=True
+        c=Credentials(login_user=USER_NAME,login_password=LOGIN_PASSWORD)
+        a=Auditor(self.url,limit=7,authorized=True)
+        WordPressIdentity(a,c).single_login()
+        posts=[e for e in WPHandler.calls if e[0]=="POST"]
+        self.assertEqual(len(posts),1)
+        self.assertEqual(a.results[-1].visibility,"auth-not-confirmed")
+        self.assertFalse(any(r.visibility=="authenticated-identity-confirmed"
+                             for r in a.results))
+
+    def test_form_only_credentials_do_not_attempt_an_unbacked_rest_session(self):
+        creds=Credentials(login_user=USER_NAME,login_password=LOGIN_PASSWORD)
+        a=Auditor(self.url,limit=170,authorized=True)
+        a.discover(full=True,no_ajax=True,probe_discovered=False,
+                   payload_limit=0,identity_credentials=creds)
+        self.assertTrue(any(p["name"]=="Single test-account WordPress login"
+                            and p["state"]=="done" for p in a.phase_stats))
+        self.assertTrue(any(p["name"]=="Authenticated REST identity and role boundaries"
+                            and p["state"]=="skipped" for p in a.phase_stats))
+        self.assertFalse(any(r.name=="WP REST authenticated identity" for r in a.results))
+        self.assertEqual(len([e for e in WPHandler.calls if e[0]=="POST"
+                              and e[1]=="/wp-login.php"]),1)
 
     def test_failed_login_is_not_retried_or_marked_confirmed(self):
         c=Credentials(login_user=USER_NAME,login_password="wrong-password")

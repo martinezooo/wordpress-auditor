@@ -378,7 +378,10 @@ class Auditor:
         self._phase("Authenticated REST identity and role boundaries",
                     identity.authenticated_rest,
                     enabled=full and not disable_identity and (
-                        bool(identity.credentials.app_header()) or self.authorized),
+                        bool(identity.credentials.app_header()) or (
+                            self.authorized and any(
+                                k.lower() in ("cookie", "authorization", "x-wp-nonce")
+                                for k in self.headers))),
                     reason="no test-account application password/session supplied")
         self._phase("Multiple test-role WordPress capability matrix",
                     identity.role_matrix,
