@@ -185,6 +185,11 @@ OPTIONAL_REASON = {
 }
 
 
+# Checks whose results are derived (asset analysis, cross-channel comparison):
+# they intentionally carry no HTTP status, so a missing status is not an error.
+WP_DERIVED_IDS = frozenset({"WP-52", "WP-53", "WP-68", "WP-70"})
+
+
 def coverage(auditor):
     """Return status for each source-backed check, including the unexecuted ones."""
     rows = auditor.results
@@ -211,7 +216,7 @@ def coverage(auditor):
             else:
                 status, reason = "SKIPPED", "No discovered REST route was probed"
         elif matches:
-            passive = check.check_id in ("WP-52", "WP-53")
+            passive = check.check_id in (WP_DERIVED_IDS)
             error = all(r.status is None for r in matches) and not passive
             blocked = all(r.status in (401, 403) for r in matches)
             partial = check.check_id in ("WP-12", "WP-48", "WP-51") and any(
@@ -220,8 +225,10 @@ def coverage(auditor):
             )
             status = ("ERROR" if error else "BLOCKED" if blocked else
                       "PARTIAL" if partial else "CHECKED")
-            reason = ("%d passive asset analysis result(s)" if passive
+            reason = ("%d derived analysis result(s); no direct HTTP status by design" if passive
                       else "%d recorded HTTP check result(s)") % len(matches)
+            if blocked and not passive:
+                reason += "; anonymous access denied (401/403), protection observed"
             if partial:
                 reason += "; not all paired tests completed"
         elif check.mode == "manual":

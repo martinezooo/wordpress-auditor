@@ -9,6 +9,7 @@ import json
 import re
 from dataclasses import dataclass
 
+from .assessment import LEVELS, assess
 
 @dataclass(frozen=True)
 class ReadRule:
@@ -253,10 +254,16 @@ def operation_matrix(auditor):
                 matches = [r for r in rows if r.name == channel.key or
                            r.name.startswith(channel.key)]
                 if matches:
-                    # Checked is not necessarily safe or successful.
-                    label = "TESTED"
-                    evidence = ("Result: " + matches[-1].visibility +
-                                "; HTTP " + str(matches[-1].status))
+                    # Checked is not necessarily safe or successful. A channel
+                    # may be backed by several probes (e.g. many config backup
+                    # paths): report the most severe one, never merely the last.
+                    best = min(matches, key=lambda r: LEVELS.index(
+                        assess(r.name, r.status, r.visibility, r.detail)[0]))
+                    level = assess(best.name, best.status, best.visibility, best.detail)[0]
+                    label = "CONFIRMED" if level in ("HIGH", "MEDIUM", "LOW") else (
+                        "REVIEW" if level == "REVIEW" else "TESTED")
+                    evidence = ("Result: " + best.visibility + "; HTTP " + str(best.status) +
+                                "; %d probe(s)" % len(matches))
             channels.append({
                 "channel": channel.name, "status": label, "evidence": evidence,
             })

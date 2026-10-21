@@ -7,7 +7,7 @@ class PolicySignatures(unittest.TestCase):
     def test_wordpress_registration_requires_real_form(self):
         body = (b'<form id="registerform"><input name="user_login">'
                 b'<input name="user_email"></form>')
-        self.assertEqual(classify("register", 200, body)[0], "registration-form-observed")
+        self.assertEqual(classify("register", 200, body)[0], "review-open-registration")
         for content in (b"<html>WordPress registration unavailable</html>",
                         b'<form id="loginform"><input name="log"></form>',
                         b"not found"):

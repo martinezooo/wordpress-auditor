@@ -50,7 +50,7 @@ class PermissionTests(unittest.TestCase):
         self.assertEqual(probe_ajax_unknown(a), 0)
         self.assertFalse(a.calls)
     def test_xmlrpc_policy_get403_post200_is_normal(self):
-        checks = [{"name": "XML-RPC endpoint", "status": 403},
+        checks = [{"name": "XML-RPC endpoint GET", "status": 403},
                   {"name": "XML-RPC system.listMethods", "status": 200}]
         state, detail = summarize_xmlrpc_policy(checks)
         self.assertEqual(state, "observed")

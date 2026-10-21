@@ -46,8 +46,11 @@ def classify(kind: str, status: int | None, body: bytes) -> tuple[str, str]:
         return "not-confirmed", "No WordPress login form signature (possible soft-404 or custom login)"
     if kind == "register":
         if REGISTER_FORM.search(text) and FORM_FIELDS.search(text):
-            return "registration-form-observed", (
-                "WordPress account signup form found; submitting/registering is not attempted")
+            # Open signup is often intentional, so this is REVIEW, never a confirmed flaw:
+            # the resulting default role can only be verified with authorization.
+            return "review-open-registration", (
+                "Public WordPress registration is open; verify the default role is "
+                "least-privileged. No account was registered")
         if re.search(r"registration (?:is\s+)?(?:currently\s+)?(?:disabled|not allowed)", text, re.I):
             return "registration-restricted", "WordPress registration appears disabled (page text)"
         return "not-confirmed", "No standard WordPress registration form verified"

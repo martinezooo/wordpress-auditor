@@ -79,7 +79,9 @@ def summarize_xmlrpc_policy(results):
     """Compare recorded GET and harmless system.listMethods POST status."""
     def field(row, key):
         return row[key] if isinstance(row, dict) else getattr(row, key)
-    get = next((r for r in results if field(r, "name") == "XML-RPC endpoint"), None)
+    # The engine records the probe as "XML-RPC endpoint GET".
+    get = next((r for r in results
+                if field(r, "name") in ("XML-RPC endpoint GET", "XML-RPC endpoint")), None)
     post = next((r for r in results if field(r, "name") == "XML-RPC system.listMethods"), None)
     if get is None or post is None:
         return "not-evaluated", "GET/POST XML-RPC diagnostic pair incomplete"

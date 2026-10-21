@@ -177,10 +177,15 @@ class WordPressIdentity:
             data = _json(body)
             if kind == "app-passwords":
                 confirmed = status == 200 and _has_password_metadata(data)
-                verdict = "confirmed-public-app-password-metadata" if confirmed else (
-                    "auth-required" if status in (401, 403) else "unverified")
-                detail = "Application password metadata returned anonymously (values withheld)" if confirmed else (
-                    "Read restricted (HTTP %s)" % status)
+                disabled = (status == 501 and isinstance(data, dict)
+                            and data.get("code") == "application_passwords_disabled")
+                verdict = ("confirmed-public-app-password-metadata" if confirmed else
+                           "feature-disabled" if disabled else
+                           "auth-required" if status in (401, 403) else "unverified")
+                detail = ("Application password metadata returned anonymously (values withheld)" if confirmed else
+                          "Application Passwords are disabled on this site (WordPress HTTP 501); "
+                          "authenticated Application Password checks are not applicable" if disabled else
+                          "Read restricted (HTTP %s)" % status)
             elif kind == "settings":
                 confirmed = status == 200 and isinstance(data, dict) and (
                     "siteurl" in data or "default_role" in data or "users_can_register" in data)

@@ -20,6 +20,9 @@ def assess(name: str, status: int | None, visibility: str, detail: str):
     """Classify a test result without confusing access status with vulnerability."""
     if visibility in VERIFIED and status == 200:
         return VERIFIED[visibility]
+    if visibility == "feature-disabled":
+        # e.g. WordPress answers HTTP 501 when Application Passwords are off.
+        return "INFO", "observed"
     if visibility.startswith("review-"):
         return "REVIEW", "unverified"
     if visibility == "requires-oast-correlation":
