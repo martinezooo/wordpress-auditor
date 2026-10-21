@@ -11,6 +11,7 @@ from collections import Counter
 HACKTRICKS = "https://book.hacktricks.wiki/en/network-services-pentesting/pentesting-web/wordpress.html"
 WP_REST = "https://developer.wordpress.org/rest-api/reference/"
 WP_AUTH = "https://developer.wordpress.org/rest-api/using-the-rest-api/authentication/"
+WP_DIRECT_ACCESS = "https://developer.wordpress.org/plugins/wordpress-org/common-issues/#direct-file-access"
 
 
 @dataclass(frozen=True)
@@ -161,7 +162,9 @@ CHECKS = [
     Check("WP-70", "XML-RPC", "GET/POST method policy correlation", "automatic",
           ("WP XML-RPC method policy",), WP_REST),
     Check("WP-71", "Files/Setup", "Direct access to core/plugin PHP files (status meaning)",
-          "automatic", ("WP core file direct access",), WP_REST),
+          "automatic", ("WP core file direct access",), WP_DIRECT_ACCESS),
+    Check("WP-72", "Files/Setup", "Context-triggered PHP backup/source follow-up",
+          "automatic", ("WP direct-access follow-up source backup",), WP_DIRECT_ACCESS),
 ]
 
 MANUAL_REASON = {
@@ -217,6 +220,11 @@ def coverage(auditor):
                 status, reason = "CHECKED", "%d REST paths probed" % len(rest)
             else:
                 status, reason = "SKIPPED", "No discovered REST route was probed"
+        elif check.check_id == "WP-72" and not matches and any(
+                r.name.startswith("WP core file direct access") for r in rows):
+            status = "CHECKED"
+            reason = ("Direct-access results evaluated; no file-specific anomaly "
+                      "required a backup/source follow-up")
         elif matches:
             passive = check.check_id in (WP_DERIVED_IDS)
             error = all(r.status is None for r in matches) and not passive

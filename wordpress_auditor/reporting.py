@@ -161,6 +161,8 @@ def format_terminal(auditor, rows, verbose=False, target=None):
                 lines.append("      Meaning: " + r["meaning"][:400])
             if r.get("action"):
                 lines.append("      Do:      " + r["action"][:200])
+            if r.get("reference"):
+                lines.append("      Basis:   " + r["reference"][:300])
         if len(candidates) > 8:
             lines.append("  - ... %d more in JSON" % (len(candidates) - 8))
     # 5xx/429 are not "just errors": explain each distinct cause once.
@@ -178,6 +180,8 @@ def format_terminal(auditor, rows, verbose=False, target=None):
             lines.append("      Meaning: " + group[0]["meaning"][:400])
             if group[0].get("action"):
                 lines.append("      Do:      " + group[0]["action"][:200])
+            if group[0].get("reference"):
+                lines.append("      Basis:   " + group[0]["reference"][:300])
     lines += ["", "COVERAGE & LIMITATIONS"]
     if unverified:
         lines.append("  - %d discovered URL paths were not fetched "

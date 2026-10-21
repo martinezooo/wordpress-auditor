@@ -1,4 +1,4 @@
-"""Plain-language security meaning of HTTP statuses on WordPress paths.
+"""Source-backed security meaning of HTTP observations on WordPress paths.
 
 A status code alone says little. What it means depends on the ROLE of the file:
 
@@ -15,6 +15,7 @@ directory. If the control returns the same 5xx, the error is not about this file
 (server/PHP/WAF failure), so no file-specific conclusion may be drawn.
 
 No request is made here; the module only interprets what was already observed.
+Conclusions deliberately distinguish official WordPress behavior from inference.
 """
 from __future__ import annotations
 
@@ -48,12 +49,18 @@ WAF_HINT = re.compile(
     rb"(?:mod_security|modsecurity|Request blocked|Access denied \| |Attention Required"
     rb"|Sucuri Website Firewall|Wordfence|You don't have permission to access)", re.I)
 
+WP_DIRECT_ACCESS = "https://developer.wordpress.org/plugins/wordpress-org/common-issues/#direct-file-access"
+WP_HARDENING = "https://developer.wordpress.org/advanced-administration/security/hardening/"
+WP_DEBUGGING = "https://developer.wordpress.org/advanced-administration/debug/debug-wordpress/"
+WP_CONFIG = "https://developer.wordpress.org/apis/wp-config-php/"
+
 
 @dataclass(frozen=True)
 class Interpretation:
     verdict: str   # becomes Result.visibility; "review-*"/"confirmed-*" feed severity
     meaning: str   # what the status means here, in plain language
     action: str    # what the site owner / auditor should do next
+    reference: str = ""  # public source supporting the rule, not the target
 
 
 def classify_role(path: str) -> str:
@@ -110,12 +117,12 @@ def interpret(path, status, body=b"", control_status=None):
             "conclusion about this file." % status,
             "Re-run with --delay 1. If it persists, check PHP-FPM and web-server logs.")
 
+    # HTTP 501 is only treated as a disabled WordPress feature when the caller
+    # has verified the WordPress error code (for example
+    # application_passwords_disabled in wp_identity.py). A bare 501 on an
+    # arbitrary PHP file has no WordPress-specific meaning.
     if status == 501:
-        return Interpretation(
-            "feature-disabled",
-            "Server answered 'not implemented': the feature is switched off or "
-            "unsupported. Usually the safe state.",
-            "None, unless you expected this feature to work.")
+        return None
 
     if status >= 500:
         if _server_wide(status, control_status):
@@ -131,7 +138,8 @@ def interpret(path, status, body=b"", control_status=None):
                 "A raw PHP error with a server file path or stack trace is shown to "
                 "anonymous visitors (display_errors is on). This leaks the install "
                 "path and code structure that help later attacks.",
-                "Set display_errors=Off and WP_DEBUG_DISPLAY=false; log errors to a file instead.")
+                "Set display_errors=Off and WP_DEBUG_DISPLAY=false; log errors outside the public root.",
+                WP_DEBUGGING)
         if DB_ERROR.search(body):
             return Interpretation(
                 "site-database-error",
@@ -161,49 +169,53 @@ def interpret(path, status, body=b"", control_status=None):
         if role == "setup":
             return Interpretation(
                 "review-setup-script-error",
-                shown + "An install/upgrade/repair script executes but fails: the site "
-                "may be half-installed or in an inconsistent state. Setup scripts that "
-                "can run are dangerous.",
-                "Verify the site is fully installed; deny /wp-admin/install.php, "
-                "upgrade.php and maint/repair.php to the public.")
+                shown + "A WordPress setup/repair surface reached PHP but failed. The "
+                "status alone does not prove that an installation or repair action is "
+                "available; the scanner separately checks for the real WordPress form.",
+                "Review the paired setup-form result. If no form was confirmed, treat "
+                "this as availability/hardening rather than a vulnerability.",
+                WP_HARDENING)
         if role == "config":
             return Interpretation(
                 "config-executed",
                 shown + "wp-config.php is EXECUTED by PHP, not served as text (good). "
                 "A 500 only means it cannot run on its own, which is normal.",
-                "None. Make sure no backup copy (.bak, ~, .swp) is reachable.")
+                "None. The scanner separately tests common backup names by content signature.",
+                WP_CONFIG)
         if role == "backup":
             return Interpretation(
                 "review-config-backup-error",
                 "A wp-config backup name produces a server error instead of 404/403: "
                 "the file may exist but the server fails while delivering it.",
-                "Check whether the file exists on disk and delete it.")
+                "Check whether the file exists on disk and delete it.",
+                WP_HARDENING)
         if role == "uploads":
             return Interpretation(
                 "review-php-executable-in-uploads",
                 "PHP in wp-content/uploads is being executed. Anyone who can upload a "
                 "file there gets remote code execution.",
-                "Disable PHP execution in uploads (web-server rule) and delete the file.")
+                "Disable PHP execution in uploads (web-server rule) and delete the file.",
+                WP_HARDENING)
         if role in ("plugin", "internal", "admin-page", "other"):
             reach = ("an include-only core file" if role == "internal" else
                      "a plugin/theme file" if role == "plugin" else "a PHP file")
-            base = (shown + "The server ran %s directly, outside WordPress, and it "
-                    "crashed. What this tells us: (1) PHP is reachable for this file - no web-server "
-                    "deny rule exists; (2) the source is not leaked; (3) it lacks an "
-                    "ABSPATH guard." % reach)
+            base = (shown + "The response differs from a nonexistent sibling and is "
+                    "consistent with file-specific PHP execution/failure for %s. It does "
+                    "not prove exploitability or prove that an ABSPATH guard is absent." % reach)
             if role == "internal":
                 return Interpretation(
                     "internal-file-executed",
-                    base + " For core files this is normal WordPress behavior, not a "
-                    "vulnerability, only a hardening gap.",
-                    "Optional hardening: deny direct access to wp-includes/*.php and "
-                    "wp-admin/includes/*.php.")
+                    base + " Direct responses from include-only core files are not a "
+                    "security finding unless source, secrets, or diagnostic detail leaks.",
+                    "No exploit flow is inferred. Fix only confirmed source/error disclosure.",
+                    WP_HARDENING)
             return Interpretation(
                 "review-direct-php-execution",
-                base + " Plugin/theme files without a guard are a common source of "
-                "real bugs; a crash proves the code runs, not that it is exploitable.",
-                "Review the file's source; add defined('ABSPATH') || exit; or deny "
-                "direct PHP access inside wp-content/plugins and themes.")
+                base + " WordPress Plugin Review guidance says the risk of direct file "
+                "access depends on whether the file contains executable code and what it does.",
+                "Automatic next step: test bounded backup/source variants. Manual next "
+                "step: inspect executable code for an ABSPATH guard, nonce and capability checks.",
+                WP_DIRECT_ACCESS)
         return Interpretation(
             "requires-review", "Unexpected server error on this path.",
             "Check the server error log.")
@@ -234,7 +246,8 @@ def interpret(path, status, body=b"", control_status=None):
             "A raw PHP error with a server file path or stack trace is shown to "
             "anonymous visitors (display_errors is on; note the status is 200, not 500). "
             "This leaks the install path and code structure that help later attacks.",
-            "Set display_errors=Off and WP_DEBUG_DISPLAY=false; log errors to a file instead.")
+            "Set display_errors=Off and WP_DEBUG_DISPLAY=false; log errors outside the public root.",
+            WP_DEBUGGING)
 
     if status == 200 and role in ("internal", "plugin", "admin-page"):
         if PHP_SOURCE.search(body):
@@ -242,20 +255,23 @@ def interpret(path, status, body=b"", control_status=None):
                 "confirmed-php-source-disclosure",
                 "PHP source code is delivered as plain text: PHP is NOT being "
                 "interpreted for this file.",
-                "Fix the PHP handler configuration immediately and rotate secrets.")
+                "Fix the PHP handler configuration immediately and rotate secrets.",
+                WP_HARDENING)
         if not body.strip():
             return Interpretation(
                 "internal-file-executes-silently",
                 "Empty response: the file ran and exited quietly through its ABSPATH "
                 "guard. Works as designed, but no web-server rule blocks direct access.",
-                "Optional hardening: deny direct access to include-only PHP files.")
+                "No vulnerability is established; prioritize only content/error leaks.",
+                WP_HARDENING)
         return None
 
     if status == 200 and role == "uploads":
         return Interpretation(
             "review-php-executable-in-uploads",
             "A PHP file in wp-content/uploads answers 200 - uploads should never run PHP.",
-            "Disable PHP execution in uploads and inspect/delete the file.")
+            "Disable PHP execution in uploads and inspect/delete the file.",
+            WP_HARDENING)
 
     if status == 404 and role in ("entry", "setup"):
         return Interpretation(

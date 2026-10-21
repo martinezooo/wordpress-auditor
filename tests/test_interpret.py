@@ -3,6 +3,7 @@ import unittest
 
 from wordpress_auditor.assessment import assess
 from wordpress_auditor.interpret import classify_role, interpret
+from wordpress_auditor.wp_corefiles import check_core_files, source_followups
 
 LEAK = (b"\nFatal error: Uncaught Error: Call to undefined function x() in "
         b"/var/www/html/wp-content/plugins/p/p.php:3\nStack trace:\n#0 {main}\n")
@@ -25,8 +26,13 @@ class InterpretTests(unittest.TestCase):
         found = interpret("/wp-content/plugins/x/x.php", 500, b"", 404)
         self.assertEqual(found.verdict, "review-direct-php-execution")
         self.assertIn("ABSPATH", found.meaning)
+        self.assertIn("does not prove", found.meaning)
         self.assertTrue(found.action)
+        self.assertIn("developer.wordpress.org", found.reference)
         self.assertEqual(assess("n", 500, found.verdict, "")[0], "REVIEW")
+
+    def test_bare_501_has_no_wordpress_specific_interpretation(self):
+        self.assertIsNone(interpret("/anything.php", 501, b"", 404))
 
     def test_500_on_core_include_is_info_hardening(self):
         found = interpret("/wp-settings.php", 500, b"", 404)
@@ -75,6 +81,41 @@ class InterpretTests(unittest.TestCase):
     def test_denied_internal_file_is_good_hardening(self):
         found = interpret("/wp-includes/functions.php", 403, b"", 404)
         self.assertEqual(found.verdict, "auth-required")
+
+    def test_plugin_anomaly_opens_only_bounded_source_followups(self):
+        expected = ("/wp-content/plugins/x/x.php.bak",
+                    "/wp-content/plugins/x/x.php~")
+        self.assertEqual(source_followups("/wp-content/plugins/x/x.php", 500, b"", 404),
+                         expected)
+        self.assertEqual(source_followups("/wp-content/plugins/x/x.php", 500, b"", 500), ())
+        self.assertEqual(source_followups("/wp-settings.php", 500, b"", 404), ())
+
+    def test_followup_confirms_wordpress_php_source_not_status_alone(self):
+        class Fake:
+            limit = 80
+            request_count = 0
+            plugin_slugs = {"demo"}
+            def __init__(self):
+                self.results = []
+            def request(self, path, include_credentials=False):
+                self.request_count += 1
+                mapping = {
+                    "/wp-content/plugins/demo/demo.php": (500, b"critical"),
+                    "/wp-content/plugins/demo/demo.php.bak": (
+                        200, b"<?php\n/* Plugin Name: Demo */\nadd_action('init', 'demo');"),
+                }
+                status, body = mapping.get(path, (404, b"missing"))
+                return status, body, {}
+            def add(self, name, path, status, **fields):
+                self.results.append({"name": name, "path": path, "status": status, **fields})
+        fake = Fake()
+        check_core_files(fake)
+        found = [r for r in fake.results
+                 if r["name"] == "WP direct-access follow-up source backup"
+                 and r.get("visibility") == "confirmed-php-source-disclosure"]
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["path"], "/wp-content/plugins/demo/demo.php.bak")
+        self.assertNotIn("add_action", str(found))
 
 
 if __name__ == "__main__":

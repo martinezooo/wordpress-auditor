@@ -58,7 +58,7 @@ def check_exposures(auditor):
             break
         status, body, _ = auditor.request(path, include_credentials=False)
         count += 1
-        meaning = action = ""
+        meaning = action = reference = ""
         if status == 200 and hashlib.sha256(body).digest() != control_hash:
             if kind == "config" and CONFIG_SIGNAL.search(body):
                 state = "confirmed-public-config-backup"
@@ -84,13 +84,14 @@ def check_exposures(auditor):
             state, evidence = "auth-required", "Access denied"
             found = interpret(path, status, body, control_status)
             if found:
-                meaning, action = found.meaning, found.action
+                meaning, action, reference = found.meaning, found.action, found.reference
         elif status is not None and status >= 500:
             # A 5xx is only meaningful together with the file's role and a control.
             found = interpret(path, status, body, control_status)
             if found:
                 state, evidence = found.verdict, found.meaning.split(". ")[0][:200]
                 meaning, action = found.meaning, found.action
+                reference = found.reference
             else:
                 state, evidence = "requires-review", "Server returned an error; no exposure proven"
         else:
@@ -99,5 +100,6 @@ def check_exposures(auditor):
         if kind == "listing":
             label += " " + path.rstrip("/").rsplit("/", 1)[-1]
         auditor.add(label, path, status, detail=evidence, visibility=state,
-                    meaning=meaning, action=action)
+                    meaning=meaning, action=action,
+                    reference=reference)
     return count

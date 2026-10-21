@@ -34,15 +34,17 @@ def render_details(rows, fmt):
     if fmt == "csv":
         s = io.StringIO()
         w = csv.DictWriter(s, fieldnames=["name", "url", "status", "visibility", "detail",
-                                           "severity", "confidence", "meaning", "action"])
+                                           "severity", "confidence", "meaning", "action",
+                                           "reference"])
         w.writeheader()
         w.writerows(rows)
         return s.getvalue()
     if fmt == "md":
-        out = "| Name | URL | Status | Severity | Confidence | Visibility | Detail |\n|---|---|---:|---|---|---|---|\n"
+        out = "| Name | URL | Status | Severity | Confidence | Visibility | Detail | Reference |\n|---|---|---:|---|---|---|---|---|\n"
         for r in rows:
             values = [str(r[k]).replace("|", "\\|").replace("\n", " ") for k in
-                      ("name", "url", "status", "severity", "confidence", "visibility", "detail")]
+                      ("name", "url", "status", "severity", "confidence", "visibility",
+                       "detail", "reference")]
             out += "| " + " | ".join(values) + " |\n"
         return out
     raise ValueError("Unsupported detailed format: " + fmt)

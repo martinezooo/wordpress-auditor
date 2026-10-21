@@ -41,6 +41,7 @@ class Result:
     confidence: str = "observed"
     meaning: str = ""   # plain-language security meaning of the observed status
     action: str = ""    # recommended next step
+    reference: str = "" # public methodology/source for the interpretation
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -185,7 +186,7 @@ class Auditor:
                 self.request_progress_callback(self, method, report_url(url))
 
     def add(self, name, path, status, body=b"", detail="", visibility=None,
-            meaning="", action="", control_status=None):
+            meaning="", action="", reference="", control_status=None):
         if not visibility and not meaning and (
                 status is not None and (status >= 500 or status == 429)):
             # An uninterpreted 5xx/429 must never be a bare "server-error".
@@ -193,6 +194,7 @@ class Auditor:
             found = interpret(path, status, body, control_status)
             if found:
                 visibility, meaning, action = found.verdict, found.meaning, found.action
+                reference = found.reference
         if visibility:
             pass
         elif status in (401, 403):
@@ -211,7 +213,8 @@ class Auditor:
         severity, confidence = assess(name, status, visibility or "unavailable", snippet)
         result = Result(name, report_url(safe_url(self.base, path)),
                         status, visibility or "unavailable", snippet,
-                        severity, confidence, sanitize_detail(meaning, 700), sanitize_detail(action, 300))
+                        severity, confidence, sanitize_detail(meaning, 700),
+                        sanitize_detail(action, 500), reference[:500])
         self.results.append(result)
         if self.finding_callback:
             self.finding_callback(self, result)

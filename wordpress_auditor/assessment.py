@@ -21,6 +21,7 @@ INTERPRETED_INFO = frozenset({
     "feature-disabled", "rate-limited", "server-unavailable", "maintenance-mode",
     "server-wide-error", "site-database-error", "waf-blocked", "entrypoint-error",
     "config-executed", "internal-file-executed", "internal-file-executes-silently",
+    "ajax-bootstrap-error", "expected-ajax-no-action",
 })
 
 

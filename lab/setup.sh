@@ -42,6 +42,10 @@ case "$MODE" in
         echo 'body{}' > wp-content/plugins/$slug/style.css && chown -R www-data:www-data wp-content/plugins/$slug"
       WP plugin activate "$slug" || true
     done
+    # Generic deployment mistake used to verify the context-triggered source
+    # backup branch. It is not a plugin CVE and contains throwaway lab code.
+    docker compose exec -T wordpress sh -c \
+      'cp wp-content/plugins/lab-crash/lab-crash.php wp-content/plugins/lab-crash/lab-crash.php.bak; chown www-data:www-data wp-content/plugins/lab-crash/lab-crash.php.bak'
     ;;
   *) echo "unknown mode $MODE" >&2; exit 2 ;;
 esac

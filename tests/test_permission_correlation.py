@@ -14,9 +14,9 @@ class FakeAuditor:
         self.request_count += 1
         status, body = self.baseline if "?" not in path else self.unknown
         return status, body, {}
-    def add(self, name, path, status, visibility, detail):
+    def add(self, name, path, status, visibility, detail, **extra):
         self.results.append(SimpleNamespace(name=name, url=path, status=status,
-                                            visibility=visibility, detail=detail))
+                                            visibility=visibility, detail=detail, **extra))
 
 class PermissionTests(unittest.TestCase):
     def test_normal_denials(self):
@@ -45,6 +45,12 @@ class PermissionTests(unittest.TestCase):
         a = FakeAuditor(unknown=(200, b'{"ok":true}'))
         probe_ajax_unknown(a)
         self.assertEqual(a.results[-1].visibility, "review-ajax-unknown-action")
+    def test_same_ajax_500_is_bootstrap_diagnosis_not_handler_claim(self):
+        a = FakeAuditor(baseline=(500, b"critical"), unknown=(500, b"critical"))
+        probe_ajax_unknown(a)
+        self.assertEqual(a.results[-1].visibility, "ajax-bootstrap-error")
+        self.assertIn("before any registered AJAX handler", a.results[-1].meaning)
+        self.assertIn("github.com/WordPress/WordPress", a.results[-1].reference)
     def test_budget(self):
         a = FakeAuditor(limit=1)
         self.assertEqual(probe_ajax_unknown(a), 0)

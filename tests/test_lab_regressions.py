@@ -60,6 +60,13 @@ class LabRegressionTests(unittest.TestCase):
         item = next(i for i in coverage(auditor) if i["id"] == "WP-68")
         self.assertNotEqual(item["status"], "ERROR")
 
+    def test_no_triggered_source_flow_is_checked_not_ambiguous_skip(self):
+        rows = [row("WP core file direct access", 404, "not-confirmed")]
+        auditor = SimpleNamespace(results=rows, phase_stats=[], ajax_actions=set())
+        item = next(i for i in coverage(auditor) if i["id"] == "WP-72")
+        self.assertEqual(item["status"], "CHECKED")
+        self.assertIn("no file-specific anomaly", item["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

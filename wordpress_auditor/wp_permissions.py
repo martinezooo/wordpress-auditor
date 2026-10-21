@@ -5,6 +5,8 @@ Mismatch alone is not a privilege bypass. Never execute discovered plugin action
 import hashlib
 import secrets
 
+WP_AJAX_CORE = "https://github.com/WordPress/WordPress/blob/master/wp-admin/admin-ajax.php"
+
 REST_COMPARISONS = (
     ("WP private posts", "WP alternate REST private posts", "private posts"),
     ("WP pending comment moderation", "WP alternate REST moderated comments", "moderated comments"),
@@ -50,28 +52,62 @@ def compare_rest(results):
 
 
 def probe_ajax_unknown(auditor):
-    """No-credential GET baseline and random unregistered action; never call known handlers."""
+    """Source-backed dispatcher flow; never call a discovered real handler.
+
+    WordPress Core returns HTTP 400 with body ``0`` when action is absent or
+    unregistered. Any other response is compared to a unique nonexistent
+    action before it is interpreted.
+    """
     if auditor.request_count + 2 > auditor.limit:
         return 0
     base = "/wp-admin/admin-ajax.php"
     other = base + "?action=wp_audit_nonexistent_" + secrets.token_hex(12)
     status, body, _ = auditor.request(base, include_credentials=False)
+    expected_base = status == 400 and body.strip() == b"0"
     auditor.add("WP AJAX dispatcher baseline", base, status,
-                visibility="observed", detail="No action supplied; dispatcher response observed")
+                visibility="expected-ajax-no-action" if expected_base else "observed",
+                detail=("Core-compatible no-action response (HTTP 400, body 0)" if expected_base
+                        else "No action supplied; nonstandard dispatcher response observed"),
+                meaning=("WordPress Core requires a scalar action before handler dispatch. "
+                         "HTTP 400 with body 0 is expected and is not a finding." if expected_base
+                         else "The no-action dispatcher differs from current WordPress Core behavior."),
+                action=("None." if expected_base else
+                        "Compare the unique unknown-action result before testing any real handler."),
+                reference=WP_AJAX_CORE)
     unknown_status, unknown_body, _ = auditor.request(other, include_credentials=False)
     equivalent = (status == unknown_status and
                   hashlib.sha256(body).digest() == hashlib.sha256(unknown_body).digest())
-    if equivalent:
+    if equivalent and status is not None and status >= 500:
+        state = "ajax-bootstrap-error"
+        detail = ("No-action and unique unknown-action requests share the same "
+                  "HTTP %s/body" % status)
+        meaning = ("The failure occurs before any registered AJAX handler is selected, so it "
+                   "does not establish a vulnerable action. A WordPress/plugin bootstrap or "
+                   "upstream failure is more likely.")
+        action = ("Inspect PHP/WAF logs and the separate public error/debug-log checks. Do not "
+                  "treat this status as an exploitable AJAX action.")
+    elif equivalent:
         state = "expected-ajax-unknown-action"
         detail = "Unknown action matches no-action baseline; no handler execution confirmed"
+        meaning = ("The unique action is not registered and follows the same dispatcher path as "
+                   "the no-action baseline; no handler was executed.")
+        action = "None. Real handlers remain discovery-only unless explicitly enabled."
     elif unknown_status in (401, 403):
         state = "auth-required"
         detail = "Unknown action was denied; no exposure confirmed"
+        meaning = "The server or a WAF denied the unique unregistered AJAX action."
+        action = "None; this does not establish the policy of any real handler."
     else:
         state = "review-ajax-unknown-action"
         detail = "Unknown action differs from baseline; needs review, no vulnerability proven"
+        meaning = ("A unique unregistered action changed dispatcher behavior. WordPress Core "
+                   "would normally return HTTP 400/body 0, so a plugin, theme, WAF or proxy is "
+                   "intervening; no vulnerable handler is proven.")
+        action = ("Review server/plugin routing. Keep discovered real actions opt-in because GET "
+                  "handlers can have side effects.")
     auditor.add("WP AJAX unknown action", base, unknown_status,
-                visibility=state, detail=detail)
+                visibility=state, detail=detail, meaning=meaning, action=action,
+                reference=WP_AJAX_CORE)
     return 2
 
 

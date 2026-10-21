@@ -18,7 +18,7 @@ class InstallationTests(unittest.TestCase):
     def test_version_and_python_module_entrypoint(self):
         p = subprocess.run([sys.executable, "-m", "wordpress_auditor", "--version"],
                            capture_output=True, text=True, check=True)
-        self.assertIn("0.4.0", p.stdout)
+        self.assertIn("0.4.1", p.stdout)
         with self.assertRaises(SystemExit) as exc:
             with contextlib.redirect_stdout(io.StringIO()) as out:
                 main(["--version"])

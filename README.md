@@ -327,24 +327,39 @@ Never publish real Burp request files, session cookies, authentication
 tokens, test-user passwords, internal WordPress reports or client URLs.
 
 
-## What an HTTP status means (status interpretation)
+## Context-driven audit flows (not status-code guessing)
 
 A status code is never judged alone. `wordpress_auditor/interpret.py` combines the
 **role of the file** (entry point, setup script, `wp-config`, backup, include-only core
 file, plugin/theme PHP, PHP in uploads), the **response body**, and a **control**
-(a nonexistent `.php` file in the same directory) and prints *Meaning* and *Do* for
-every finding. Examples:
+(a nonexistent `.php` file in the same directory). Rules carry a public **Basis**
+link in JSON/CSV/terminal output. The primary bases are WordPress Core source and
+the official WordPress developer/security handbooks; HackTricks is used as a
+technique inventory, not as proof that an observation is vulnerable.
+
+An observation can open a bounded next flow. The scanner records those follow-up
+requests separately, and only promotes a result when the follow-up has its own
+content evidence. Examples:
 
 | Observed | Meaning |
 |---|---|
-| plugin/theme `.php` -> **500** | Executed outside WordPress and crashed: no web-server deny rule, no `ABSPATH` guard. **REVIEW**, not a vulnerability by itself. |
-| core include (`wp-settings.php`) -> 500 | Normal WordPress behavior; hardening gap only (**INFO**). |
+| plugin/theme `.php` -> **500**, unlike missing sibling | Consistent with file-specific PHP execution/failure. It does **not** prove an absent `ABSPATH` guard or an exploit. Opens two bounded backup/source checks and suggests source review. |
+| resulting `.php.bak` -> 200 with WordPress PHP source | Independently confirmed source disclosure (**HIGH**); response content and secrets are suppressed. |
+| core include (`wp-settings.php`) -> 500 | No finding unless source, secret, or diagnostic content is exposed. |
 | same 500 for a nonexistent sibling | Not about this file: server/PHP/WAF failing (**INFO**). |
 | `.php` -> 500/200 with `Fatal error ... in /path` | PHP error disclosure (display_errors on). **LOW**. Note: PHP answers **200** when display_errors is on. |
 | `.php` -> 200 with `<?php` | PHP not interpreted: source disclosure (**HIGH**). |
 | 500 + WAF signature | Blocked by a firewall; file was not executed. |
 | 502/503/504, 429 | Backend down or scanner throttled: no conclusion; re-run with `--delay 1`. |
 | 403 on an internal file | Desired hardening. |
+| `admin-ajax.php` -> 500 for both no action and random nonexistent action | Failure occurs before a registered AJAX handler is selected; diagnose bootstrap/PHP/WAF, do not claim a vulnerable action. |
 
-The direct-access probe (`WP-71`) is read-only (GET only, no `wp-mail.php`/`wp-cron.php`),
-runs in the default smart scan from a 150-request budget and uses about 1/8 of it.
+For `admin-ajax.php`, current WordPress Core behavior is the baseline: missing or
+unregistered actions normally return HTTP 400 with body `0`. The scanner compares
+those two safe requests and never invokes a discovered real action automatically.
+REST `/wp-json/` and `?rest_route=` plus XML-RPC GET/POST are likewise compared as
+separate channels; a status difference alone is not a bypass.
+
+The direct-access probe (`WP-71`) and its triggered source-backup branch (`WP-72`)
+use GET only (no `wp-mail.php`/`wp-cron.php`), run in the default smart scan from a
+150-request budget and share a strict budget of about 1/8 of the full scan.
