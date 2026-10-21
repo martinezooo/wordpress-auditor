@@ -157,8 +157,27 @@ def format_terminal(auditor, rows, verbose=False, target=None):
             lines.append("  - [%s] %s %s (HTTP %s): %s" %
                          (r.get("severity", "REVIEW"), r["name"][:32], path,
                           r["status"], r["detail"][:110]))
+            if r.get("meaning"):
+                lines.append("      Meaning: " + r["meaning"][:400])
+            if r.get("action"):
+                lines.append("      Do:      " + r["action"][:200])
         if len(candidates) > 8:
             lines.append("  - ... %d more in JSON" % (len(candidates) - 8))
+    # 5xx/429 are not "just errors": explain each distinct cause once.
+    odd = {}
+    for r in rows:
+        status = r["status"]
+        if r.get("meaning") and status is not None and (status >= 500 or status == 429):
+            odd.setdefault(r["visibility"], []).append(r)
+    if odd:
+        lines += ["", "SERVER ERRORS EXPLAINED (what an HTTP 5xx/429 means for security)"]
+        for verdict, group in odd.items():
+            paths = ", ".join(dict.fromkeys(urlsplit(g["url"]).path for g in group))
+            lines.append("  - HTTP %s on %d path(s) [%s]: %s" % (
+                group[0]["status"], len(group), verdict, paths[:150]))
+            lines.append("      Meaning: " + group[0]["meaning"][:400])
+            if group[0].get("action"):
+                lines.append("      Do:      " + group[0]["action"][:200])
     lines += ["", "COVERAGE & LIMITATIONS"]
     if unverified:
         lines.append("  - %d discovered URL paths were not fetched "

@@ -325,3 +325,26 @@ wordpress-auditor --list-checks
 
 Never publish real Burp request files, session cookies, authentication
 tokens, test-user passwords, internal WordPress reports or client URLs.
+
+
+## What an HTTP status means (status interpretation)
+
+A status code is never judged alone. `wordpress_auditor/interpret.py` combines the
+**role of the file** (entry point, setup script, `wp-config`, backup, include-only core
+file, plugin/theme PHP, PHP in uploads), the **response body**, and a **control**
+(a nonexistent `.php` file in the same directory) and prints *Meaning* and *Do* for
+every finding. Examples:
+
+| Observed | Meaning |
+|---|---|
+| plugin/theme `.php` -> **500** | Executed outside WordPress and crashed: no web-server deny rule, no `ABSPATH` guard. **REVIEW**, not a vulnerability by itself. |
+| core include (`wp-settings.php`) -> 500 | Normal WordPress behavior; hardening gap only (**INFO**). |
+| same 500 for a nonexistent sibling | Not about this file: server/PHP/WAF failing (**INFO**). |
+| `.php` -> 500/200 with `Fatal error ... in /path` | PHP error disclosure (display_errors on). **LOW**. Note: PHP answers **200** when display_errors is on. |
+| `.php` -> 200 with `<?php` | PHP not interpreted: source disclosure (**HIGH**). |
+| 500 + WAF signature | Blocked by a firewall; file was not executed. |
+| 502/503/504, 429 | Backend down or scanner throttled: no conclusion; re-run with `--delay 1`. |
+| 403 on an internal file | Desired hardening. |
+
+The direct-access probe (`WP-71`) is read-only (GET only, no `wp-mail.php`/`wp-cron.php`),
+runs in the default smart scan from a 150-request budget and uses about 1/8 of it.

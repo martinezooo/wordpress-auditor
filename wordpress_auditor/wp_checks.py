@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import re
 
+from .interpret import interpret
 CHECKS = (
     # Detect source delivery, not whether PHP execution succeeds.
     ("/wp-config.php", "config"),
@@ -47,6 +48,7 @@ def check_exposures(auditor):
         return 0
     control_path = "/.well-known/wp-audit-exposure-control-85461"
     status, control_body, _ = auditor.request(control_path, include_credentials=False)
+    control_status = status
     control_hash = hashlib.sha256(control_body).digest()
     auditor.add("WP exposure control", control_path, status,
                 detail="random-path baseline only")
@@ -56,6 +58,7 @@ def check_exposures(auditor):
             break
         status, body, _ = auditor.request(path, include_credentials=False)
         count += 1
+        meaning = action = ""
         if status == 200 and hashlib.sha256(body).digest() != control_hash:
             if kind == "config" and CONFIG_SIGNAL.search(body):
                 state = "confirmed-public-config-backup"
@@ -79,12 +82,22 @@ def check_exposures(auditor):
                 evidence = "HTTP 200 without matching WordPress artifact signature"
         elif status in (401, 403):
             state, evidence = "auth-required", "Access denied"
+            found = interpret(path, status, body, control_status)
+            if found:
+                meaning, action = found.meaning, found.action
         elif status is not None and status >= 500:
-            state, evidence = "requires-review", "Server returned an error; no exposure proven"
+            # A 5xx is only meaningful together with the file's role and a control.
+            found = interpret(path, status, body, control_status)
+            if found:
+                state, evidence = found.verdict, found.meaning.split(". ")[0][:200]
+                meaning, action = found.meaning, found.action
+            else:
+                state, evidence = "requires-review", "Server returned an error; no exposure proven"
         else:
             state, evidence = "not-confirmed", "No verified WordPress artifact exposed"
         label = "WordPress artifact " + kind
         if kind == "listing":
             label += " " + path.rstrip("/").rsplit("/", 1)[-1]
-        auditor.add(label, path, status, detail=evidence, visibility=state)
+        auditor.add(label, path, status, detail=evidence, visibility=state,
+                    meaning=meaning, action=action)
     return count

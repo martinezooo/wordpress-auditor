@@ -16,12 +16,26 @@ VERIFIED = {
     "confirmed-unsafe-wp-registration-default-role": ("HIGH", "confirmed"),
 }
 
+# Statuses already explained by interpret.py: understood, not "needs review".
+INTERPRETED_INFO = frozenset({
+    "feature-disabled", "rate-limited", "server-unavailable", "maintenance-mode",
+    "server-wide-error", "site-database-error", "waf-blocked", "entrypoint-error",
+    "config-executed", "internal-file-executed", "internal-file-executes-silently",
+})
+
+
 def assess(name: str, status: int | None, visibility: str, detail: str):
     """Classify a test result without confusing access status with vulnerability."""
     if visibility in VERIFIED and status == 200:
         return VERIFIED[visibility]
-    if visibility == "feature-disabled":
-        # e.g. WordPress answers HTTP 501 when Application Passwords are off.
+    if visibility == "confirmed-public-php-error-disclosure":
+        # Error pages arrive with 500 (or 200 when display_errors hides the status).
+        return "LOW", "confirmed"
+    if visibility == "confirmed-php-source-disclosure" and status == 200:
+        return "HIGH", "confirmed"
+    if visibility in INTERPRETED_INFO:
+        # e.g. WordPress answers HTTP 501 when Application Passwords are off;
+        # a 5xx explained by interpret.py is understood, not an open question.
         return "INFO", "observed"
     if visibility.startswith("review-"):
         return "REVIEW", "unverified"

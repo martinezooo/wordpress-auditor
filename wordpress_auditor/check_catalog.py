@@ -160,6 +160,8 @@ CHECKS = [
           ("WP AJAX unknown action",), WP_REST),
     Check("WP-70", "XML-RPC", "GET/POST method policy correlation", "automatic",
           ("WP XML-RPC method policy",), WP_REST),
+    Check("WP-71", "Files/Setup", "Direct access to core/plugin PHP files (status meaning)",
+          "automatic", ("WP core file direct access",), WP_REST),
 ]
 
 MANUAL_REASON = {

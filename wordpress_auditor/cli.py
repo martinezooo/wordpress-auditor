@@ -34,7 +34,7 @@ def render_details(rows, fmt):
     if fmt == "csv":
         s = io.StringIO()
         w = csv.DictWriter(s, fieldnames=["name", "url", "status", "visibility", "detail",
-                                           "severity", "confidence"])
+                                           "severity", "confidence", "meaning", "action"])
         w.writeheader()
         w.writerows(rows)
         return s.getvalue()

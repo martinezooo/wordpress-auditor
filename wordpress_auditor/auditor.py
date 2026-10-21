@@ -39,6 +39,8 @@ class Result:
     detail: str = ""
     severity: str = "INFO"
     confidence: str = "observed"
+    meaning: str = ""   # plain-language security meaning of the observed status
+    action: str = ""    # recommended next step
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -46,10 +48,10 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def sanitize_detail(value: str) -> str:
+def sanitize_detail(value: str, limit: int = 240) -> str:
     value = SENSITIVE.sub(r"\1=[REDACTED]", value)
     value = re.sub(r"(?i)(https?://)[^\s\"'<>]+", r"\1[REDACTED-URL]", value)
-    return value[:240]
+    return value[:limit]
 
 
 def safe_url(base: str, target: str) -> str:
@@ -182,7 +184,15 @@ class Auditor:
             if self.request_progress_callback:
                 self.request_progress_callback(self, method, report_url(url))
 
-    def add(self, name, path, status, body=b"", detail="", visibility=None):
+    def add(self, name, path, status, body=b"", detail="", visibility=None,
+            meaning="", action="", control_status=None):
+        if not visibility and not meaning and (
+                status is not None and (status >= 500 or status == 429)):
+            # An uninterpreted 5xx/429 must never be a bare "server-error".
+            from .interpret import interpret
+            found = interpret(path, status, body, control_status)
+            if found:
+                visibility, meaning, action = found.verdict, found.meaning, found.action
         if visibility:
             pass
         elif status in (401, 403):
@@ -201,7 +211,7 @@ class Auditor:
         severity, confidence = assess(name, status, visibility or "unavailable", snippet)
         result = Result(name, report_url(safe_url(self.base, path)),
                         status, visibility or "unavailable", snippet,
-                        severity, confidence)
+                        severity, confidence, sanitize_detail(meaning, 700), sanitize_detail(action, 300))
         self.results.append(result)
         if self.finding_callback:
             self.finding_callback(self, result)
@@ -528,6 +538,13 @@ class Auditor:
                     lambda: probe_ajax_unknown(self),
                     enabled=full and not no_ajax,
                     reason="requires smart/full mode with AJAX enabled")
+        def _core_files():
+            from .wp_corefiles import check_core_files
+            check_core_files(self)
+        self._phase("WordPress direct-access PHP files (status meaning)", _core_files,
+                    enabled=full and self.limit >= 150,
+                    reason="requires smart/full mode and at least 150 request budget")
+
         from .probes import ProbeSuite
         suite = ProbeSuite(self, payloads=payloads)
         self.payload_candidates = len(suite.paths) + len(suite.headers)
