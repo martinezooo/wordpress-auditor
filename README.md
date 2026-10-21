@@ -94,6 +94,15 @@ Only a JSON WordPress object
 with a numeric ID, matching private status or sensitive field, confirms
 exposure. HTTP 200 with a login/soft-404 page does not.
 
+New permission correlation joins existing standard /wp-json/ and alternate
+?rest_route= results for the same WordPress operation without repeating requests.
+A mismatch is REVIEW until the alternate route independently discloses protected
+WordPress content; HTTP status differences alone never prove privilege bypass.
+XML-RPC GET/POST differences are explained as policy observations, not bugs.
+Two bounded anonymous AJAX requests compare the no-action dispatcher response
+against a random unregistered action. No discovered plugin AJAX handler is
+executed automatically, and neither request submits a comment or changes data.
+
 Additional anonymous checks exercise WordPress REST through the alternative
 ?rest_route= channel for private posts, moderated comments, user edit
 fields and site settings. This can reveal inconsistent WAF routing or

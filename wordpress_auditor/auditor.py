@@ -339,8 +339,8 @@ class Auditor:
             count = self.request_count - before_requests
             phase = {"name": title, "requests": count,
                      "checks": len(self.results) - before_checks,
-                     "state": "done" if count else "no-requests",
-                     "reason": "" if count else "no eligible candidates"}
+                     "state": "done" if (count or len(self.results) > before_checks) else "no-requests",
+                     "reason": "" if (count or len(self.results) > before_checks) else "no eligible candidates"}
             self.phase_stats.append(phase)
             if self.progress_callback:
                 self.progress_callback("done", title, self, phase)
@@ -496,6 +496,22 @@ class Auditor:
                     enabled=full and self.limit >= 80,
                     reason="requires smart/full mode and at least 80 request budget")
 
+        from .wp_permissions import compare_rest, summarize_xmlrpc_policy
+        def _correlate_permissions():
+            for label, verdict, detail in compare_rest(self.results):
+                if verdict == "not-evaluated":
+                    continue
+                self.add("WP REST channel comparison " + label,
+                         "/wp-json/", None, visibility=verdict, detail=detail)
+            verdict, detail = summarize_xmlrpc_policy(self.results)
+            if verdict != "not-evaluated":
+                self.add("WP XML-RPC method policy", "/xmlrpc.php",
+                         None, visibility=verdict, detail=detail)
+        self._phase("WordPress REST/XML-RPC permission correlation",
+                    _correlate_permissions,
+                    enabled=full,
+                    reason="requires smart/full mode")
+
         def _crawl_and_inspect():
             self.discover_ajax(
                 probe=ajax_probe,
@@ -507,6 +523,11 @@ class Auditor:
         self._phase("HTML/JavaScript crawling and AJAX discovery",
                     _crawl_and_inspect,
                     enabled=not no_ajax, reason="disabled by --no-ajax")
+        from .wp_permissions import probe_ajax_unknown
+        self._phase("WordPress AJAX dispatcher unknown-action check",
+                    lambda: probe_ajax_unknown(self),
+                    enabled=full and not no_ajax,
+                    reason="requires smart/full mode with AJAX enabled")
         from .probes import ProbeSuite
         suite = ProbeSuite(self, payloads=payloads)
         self.payload_candidates = len(suite.paths) + len(suite.headers)

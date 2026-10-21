@@ -154,6 +154,12 @@ CHECKS = [
           ("WP alternate REST private user fields",), WP_REST),
     Check("WP-67", "Core Misconfig", "Alternate rest_route admin settings", "automatic",
           ("WP alternate REST administrative settings",), WP_REST),
+    Check("WP-68", "Core Misconfig", "Cross-channel REST permission comparisons", "automatic",
+          ("WP REST channel comparison",), WP_REST),
+    Check("WP-69", "AJAX", "Unknown action versus dispatcher baseline", "automatic",
+          ("WP AJAX unknown action",), WP_REST),
+    Check("WP-70", "XML-RPC", "GET/POST method policy correlation", "automatic",
+          ("WP XML-RPC method policy",), WP_REST),
 ]
 
 MANUAL_REASON = {
