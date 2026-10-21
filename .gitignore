@@ -21,3 +21,14 @@ scan-summary.md
 latest-report.json
 test-account.json
 authenticated.json
+
+# Python build artifacts (not source files)
+build/
+dist/
+*.whl
+.pytest_cache/
+
+# Generated operation and scan result exports
+core-operations.json
+core-operations.md
+.env

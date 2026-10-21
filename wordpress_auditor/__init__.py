@@ -1,2 +1,2 @@
-"""Safe WordPress visibility auditing utilities."""
-__version__ = "0.1.0"
+"""WordPress Core security configuration auditor."""
+__version__ = "0.4.0"

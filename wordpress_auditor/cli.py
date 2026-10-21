@@ -17,6 +17,8 @@ from .console import LivePrinter, supports_color, color_summary
 from .check_catalog import coverage as build_coverage, summary as coverage_summary
 from .check_catalog import describe_plan, render_coverage_markdown
 from .core_scenarios import operation_matrix, matrix_markdown
+from . import __version__
+from .storage import default_audit_dir
 from .wp_identity import Credentials, RoleSession
 from .queue import load_previous as load_url_queue, save as save_url_queue
 
@@ -114,7 +116,10 @@ def main(argv=None):
     p.add_argument("--xmlrpc", action="store_true")
     p.add_argument("--ajax-probe", action="store_true")
     p.add_argument("--no-ajax", action="store_true")
+    p.add_argument("--audit-dir", metavar="DIR",
+                   help="save scan state and reports in DIR (default: user state dir per target)")
     p.add_argument("--wordlist-out")
+    p.add_argument("--version", action="version", version="%(prog)s " + __version__)
     p.add_argument("--format", choices=("summary", "json", "csv", "md"), default="summary")
     p.add_argument("--verbose", action="store_true", help="show each checked endpoint")
     p.add_argument("--output", "--out", help="save report (extension .json, .csv, .md)")
@@ -234,7 +239,13 @@ def main(argv=None):
         get_payloads(auditor, a.payloads)
     wordlist_out = a.wordlist_out
     if not wordlist_out:
-        directory = os.path.dirname(os.path.abspath(a.output)) if a.output else os.path.abspath("audit")
+        if a.audit_dir:
+            directory = os.path.abspath(os.path.expanduser(a.audit_dir))
+        elif a.output:
+            directory = os.path.dirname(os.path.abspath(a.output))
+        else:
+            directory = default_audit_dir(url)
+        os.makedirs(directory, mode=0o700, exist_ok=True)
         wordlist_out = os.path.join(directory, "wordlist.txt")
     if os.path.isfile(wordlist_out):
         # Merge previous in-scope discoveries so the next scan rechecks them.

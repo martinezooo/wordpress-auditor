@@ -13,18 +13,57 @@ References: [HackTricks WordPress](https://book.hacktricks.wiki/en/network-servi
 [WordPress REST API](https://developer.wordpress.org/rest-api/reference/),
 [WordPress Authentication](https://developer.wordpress.org/rest-api/using-the-rest-api/authentication/).
 
-## Installation (Kali / macOS / Linux)
+## One-time installation (Kali / macOS / Linux)
 
-Python **3.10+** required.
+Python 3.10+ required. The installer creates a **private, persistent virtual
+environment** under ~/.local/share/wordpress-auditor/venv and installs a
+standalone executable at ~/.local/bin/wordpress-auditor. It does not modify
+system Python and does not require activating a virtualenv.
 
 ~~~sh
 git clone https://github.com/martinezooo/wordpress-auditor.git
-cd wordpress-auditor
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -e .
+bash wordpress-auditor/install.sh
+wordpress-auditor --version
 wordpress-auditor --list-checks
 ~~~
+
+If the executable is not in PATH in the current terminal, run it as
+~/.local/bin/wordpress-auditor. Add ~/.local/bin to your shell PATH once.
+Kali zsh users can add the following to ~/.zshrc:
+
+~~~sh
+export PATH="$HOME/.local/bin:$PATH"
+~~~
+
+### Existing duplicate wordpress-auditor/wordpress-auditor checkout
+
+This nested structure happens when you clone into an already-named directory.
+The Python package directory **wordpress_auditor/** is normal and must stay.
+From inside the inner Git clone, do the installation and optional layout repair:
+
+~~~sh
+bash install.sh --fix-layout
+cd ~
+wordpress-auditor --version
+~~~
+
+The layout script moves the inner Git repo up one directory **only if** the
+outer directory contains nothing else. It retains Git history, .venv,
+existing audit/ reports and uncommitted changes; otherwise it refuses to
+move anything. The installed command works regardless of whether flattening
+was possible. This does not migrate or delete old scan reports.
+
+### Updating
+
+~~~sh
+wordpress-auditor-update
+wordpress-auditor --version
+~~~
+
+The updater installs the latest code from the public main branch into the
+private app environment without needing a local checkout. For an offline
+local-source reinstall, run bash install.sh again from the Git checkout.
+Do not use sudo or pip install --break-system-packages for this tool.
 
 ## Run a scan
 
@@ -220,7 +259,16 @@ are not executed by default or as part of --deep.
 
 ## Scan output
 
-Files are placed in the ignored local audit/ directory by default.
+By default, files are saved in a per-target user state directory such as
+~/.local/state/wordpress-auditor/scans/example.invalid-<hash>/, **not** inside
+the repository or whichever directory the command runs from. The origin
+(including port and scheme) determines the folder, so unrelated targets do
+not share discoveries. Old audit/ directories are not deleted.
+
+Use --audit-dir PATH for a custom persistent workspace, --wordlist-out PATH
+for one custom wordlist and --output PATH for a specific detailed report.
+When --output is supplied without --audit-dir, associated reports are saved
+beside that output for backward compatibility. Never publish scan artifacts.
 
 | File | Purpose |
 |---|---|
