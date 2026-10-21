@@ -35,15 +35,15 @@ def render_details(rows, fmt):
         s = io.StringIO()
         w = csv.DictWriter(s, fieldnames=["name", "url", "status", "visibility", "detail",
                                            "severity", "confidence", "meaning", "action",
-                                           "reference"])
+                                           "reference", "proof"])
         w.writeheader()
         w.writerows(rows)
         return s.getvalue()
     if fmt == "md":
-        out = "| Name | URL | Status | Severity | Confidence | Visibility | Detail | Reference |\n|---|---|---:|---|---|---|---|---|\n"
+        out = "| Name | URL | Status | Severity | Proof | Confidence | Visibility | Detail | Reference |\n|---|---|---:|---|---|---|---|---|---|\n"
         for r in rows:
             values = [str(r[k]).replace("|", "\\|").replace("\n", " ") for k in
-                      ("name", "url", "status", "severity", "confidence", "visibility",
+                      ("name", "url", "status", "severity", "proof", "confidence", "visibility",
                        "detail", "reference")]
             out += "| " + " | ".join(values) + " |\n"
         return out

@@ -87,6 +87,7 @@ class TestSeverityPresentation(unittest.TestCase):
         self.assertEqual(check_exposures(a), len(CHECKS))
         verified = {r.severity: r for r in a.results if r.confidence == "confirmed"}
         self.assertEqual(set(verified), {"HIGH", "MEDIUM", "LOW"})
+        self.assertTrue(all(r.proof == "PROVED" for r in verified.values()))
         self.assertTrue(any(r.visibility=="confirmed-public-config-backup"
                             for r in a.results if r.severity=="HIGH"))
         self.assertTrue(any(r.visibility=="confirmed-public-env-config"

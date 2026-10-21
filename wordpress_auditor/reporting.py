@@ -64,11 +64,10 @@ def observations(auditor, rows):
     candidates = [r for r in rows
                   if r.get("severity", "INFO") != "INFO"]
     verified = [r for r in rows
-                if r.get("confidence") == "confirmed"
-                and r.get("severity") in ("HIGH", "MEDIUM", "LOW")]
+                if r.get("proof") == "PROVED"]
     if verified:
-        notes.append("%d WordPress-specific exposures verified by content signatures; "
-                     "review raw server behavior before reporting." % len(verified))
+        notes.append("%d WordPress-specific impact(s) actively exercised and verified "
+                     "by content signatures; sensitive values were suppressed." % len(verified))
     else:
         notes.append("No vulnerability has been independently confirmed by this scan.")
     return notes, candidates
@@ -99,6 +98,9 @@ def format_terminal(auditor, rows, verbose=False, target=None):
         "SEVERITY: " + "  ".join("%s:%d" % (level, sum(
             r.get("severity", "INFO") == level for r in rows))
             for level in ("HIGH", "MEDIUM", "LOW", "REVIEW", "INFO")),
+        "PENTEST PROOF: " + "  ".join("%s:%d" % (state, sum(
+            r.get("proof", "OBSERVED") == state for r in rows))
+            for state in ("PROVED", "TRIGGER", "AWAITING_CALLBACK", "OBSERVED")),
         "",
         "WHAT THE ENGINE ACTUALLY DID",
     ]
@@ -154,8 +156,9 @@ def format_terminal(auditor, rows, verbose=False, target=None):
         for r in sorted(candidates, key=lambda row: priority.get(
                 row.get("severity", "INFO"), 4))[:8]:
             path = urlsplit(r["url"]).path
-            lines.append("  - [%s] %s %s (HTTP %s): %s" %
-                         (r.get("severity", "REVIEW"), r["name"][:32], path,
+            lines.append("  - [%s/%s] %s %s (HTTP %s): %s" %
+                         (r.get("severity", "REVIEW"), r.get("proof", "OBSERVED"),
+                          r["name"][:32], path,
                           r["status"], r["detail"][:110]))
             if r.get("meaning"):
                 lines.append("      Meaning: " + r["meaning"][:400])

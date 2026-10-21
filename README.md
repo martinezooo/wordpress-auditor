@@ -133,6 +133,27 @@ Only a JSON WordPress object
 with a numeric ID, matching private status or sensitive field, confirms
 exposure. HTTP 200 with a login/soft-404 page does not.
 
+### Pentest proof contract
+
+This is a pentest tool, not only a warning generator. Findings use an explicit
+proof state in terminal, JSON and CSV reports:
+
+| Proof | Meaning |
+|---|---|
+| `PROVED` | The scanner executed the vulnerable read path and verified the impact by WordPress-specific content evidence (for example private content, configuration source or a public debug log). |
+| `TRIGGER` | A prerequisite/anomaly is confirmed and opens a targeted next flow, but exploit impact is not yet proven. |
+| `AWAITING_CALLBACK` | A bounded OAST probe was sent and needs an external callback before it can be confirmed. |
+| `OBSERVED` | Expected, protected, inconclusive or informational behavior. |
+
+Read-only disclosure and authorization flaws are proved automatically. A
+state-changing proof must use an explicit family-specific opt-in, a unique
+marker, independent read-back and cleanup where the application permits it.
+The engine does not launch generic XSS/SQLi/IDOR payloads everywhere. It opens
+such a flow only when a WordPress misconfiguration, discovered input sink or
+permission inconsistency provides a concrete technical reason. Destructive,
+persistent, brute-force and availability-impacting actions are never inferred
+from `--deep` alone.
+
 New permission correlation joins existing standard /wp-json/ and alternate
 ?rest_route= results for the same WordPress operation without repeating requests.
 A mismatch is REVIEW until the alternate route independently discloses protected

@@ -42,6 +42,7 @@ class Result:
     meaning: str = ""   # plain-language security meaning of the observed status
     action: str = ""    # recommended next step
     reference: str = "" # public methodology/source for the interpretation
+    proof: str = "OBSERVED"  # PROVED means the vulnerable effect was exercised
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -209,12 +210,13 @@ class Auditor:
             visibility = "not-evaluated"
         # Response bodies are never copied into reports.
         snippet = sanitize_detail(detail)
-        from .assessment import assess
+        from .assessment import assess, proof_state
         severity, confidence = assess(name, status, visibility or "unavailable", snippet)
+        proof = proof_state(visibility or "unavailable", severity)
         result = Result(name, report_url(safe_url(self.base, path)),
                         status, visibility or "unavailable", snippet,
                         severity, confidence, sanitize_detail(meaning, 700),
-                        sanitize_detail(action, 500), reference[:500])
+                        sanitize_detail(action, 500), reference[:500], proof)
         self.results.append(result)
         if self.finding_callback:
             self.finding_callback(self, result)

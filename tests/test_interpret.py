@@ -2,6 +2,7 @@
 import unittest
 
 from wordpress_auditor.assessment import assess
+from wordpress_auditor.assessment import proof_state
 from wordpress_auditor.interpret import classify_role, interpret
 from wordpress_auditor.wp_corefiles import check_core_files, source_followups
 
@@ -33,6 +34,12 @@ class InterpretTests(unittest.TestCase):
 
     def test_bare_501_has_no_wordpress_specific_interpretation(self):
         self.assertIsNone(interpret("/anything.php", 501, b"", 404))
+
+    def test_proof_requires_exercised_content_not_a_trigger(self):
+        self.assertEqual(proof_state("confirmed-php-source-disclosure", "HIGH"), "PROVED")
+        self.assertEqual(proof_state("review-direct-php-execution", "REVIEW"), "TRIGGER")
+        self.assertEqual(proof_state(
+            "confirmed-unsafe-wp-registration-default-role", "HIGH"), "TRIGGER")
 
     def test_500_on_core_include_is_info_hardening(self):
         found = interpret("/wp-settings.php", 500, b"", 404)

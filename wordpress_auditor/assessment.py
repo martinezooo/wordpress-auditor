@@ -16,6 +16,32 @@ VERIFIED = {
     "confirmed-unsafe-wp-registration-default-role": ("HIGH", "confirmed"),
 }
 
+# These states mean the scanner actually exercised the vulnerable read path and
+# verified security-relevant response content. A mere endpoint/status is never
+# PROVED. Stateful and out-of-band families need a separate proof flow.
+PROVED_READ = frozenset({
+    "confirmed-public-config-backup", "confirmed-public-debug-log",
+    "confirmed-public-directory-listing", "confirmed-public-user-private-fields",
+    "confirmed-public-current-user", "confirmed-public-app-password-metadata",
+    "confirmed-public-env-config", "confirmed-public-git-metadata",
+    "confirmed-public-nonpublic-wp-content", "confirmed-public-private-comment-fields",
+    "confirmed-public-php-error-disclosure", "confirmed-php-source-disclosure",
+})
+
+
+def proof_state(visibility: str, severity: str) -> str:
+    """Describe whether impact was exercised, merely triggered, or not applicable."""
+    if visibility in PROVED_READ:
+        return "PROVED"
+    if visibility == "confirmed-unsafe-wp-registration-default-role":
+        # The dangerous precondition is confirmed, but no account was created.
+        return "TRIGGER"
+    if visibility == "requires-oast-correlation":
+        return "AWAITING_CALLBACK"
+    if severity == "REVIEW" or visibility.startswith("review-"):
+        return "TRIGGER"
+    return "OBSERVED"
+
 # Statuses already explained by interpret.py: understood, not "needs review".
 INTERPRETED_INFO = frozenset({
     "feature-disabled", "rate-limited", "server-unavailable", "maintenance-mode",
