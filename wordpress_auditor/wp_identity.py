@@ -294,6 +294,13 @@ class WordPressIdentity:
                 detail = "Anonymous HTTP %s, authenticated HTTP %s" % (
                     anon_status, auth_status)
             self._record(name, path, auth_status, verdict, detail)
+        roles = data.get("roles", []) if isinstance(data, dict) else []
+        if isinstance(roles, list) and len(roles) == 1 and roles[0] in (
+                "subscriber", "customer", "contributor", "author"):
+            from .object_access import audit_low_role_objects
+            audit_low_role_objects(
+                a, "application-password", roles[0], data["id"],
+                headers=extra, isolate_headers=bool(auth))
 
     def role_matrix(self):
         """Read-only comparison using explicit operator-provided WordPress sessions.
@@ -372,6 +379,11 @@ class WordPressIdentity:
                     self._record(
                         "WP role-session permission %s %s" % (session.label, key),
                         path, role_status, verdict, message)
+                if role_confirmed and declared_role in (
+                        "subscriber", "customer", "contributor", "author"):
+                    from .object_access import audit_low_role_objects
+                    audit_low_role_objects(
+                        a, session.label, declared_role, data["id"])
         finally:
             a.headers = original_headers
             a.authorized = original_authorized

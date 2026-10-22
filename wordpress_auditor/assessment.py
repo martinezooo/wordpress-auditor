@@ -14,6 +14,12 @@ VERIFIED = {
     "confirmed-public-nonpublic-wp-content": ("MEDIUM", "confirmed"),
     "confirmed-public-private-comment-fields": ("MEDIUM", "confirmed"),
     "confirmed-unsafe-wp-registration-default-role": ("HIGH", "confirmed"),
+    "confirmed-public-revision-content": ("MEDIUM", "confirmed"),
+    "confirmed-public-autosave-content": ("MEDIUM", "confirmed"),
+    "confirmed-public-password-protected-content": ("MEDIUM", "confirmed"),
+    "confirmed-public-media-edit-fields": ("LOW", "confirmed"),
+    "confirmed-low-priv-nonpublic-content": ("MEDIUM", "confirmed"),
+    "confirmed-low-priv-revision-content": ("MEDIUM", "confirmed"),
 }
 
 # These states mean the scanner actually exercised the vulnerable read path and
@@ -26,6 +32,10 @@ PROVED_READ = frozenset({
     "confirmed-public-env-config", "confirmed-public-git-metadata",
     "confirmed-public-nonpublic-wp-content", "confirmed-public-private-comment-fields",
     "confirmed-public-php-error-disclosure", "confirmed-php-source-disclosure",
+    "confirmed-public-revision-content", "confirmed-public-autosave-content",
+    "confirmed-public-password-protected-content",
+    "confirmed-public-media-edit-fields",
+    "confirmed-low-priv-nonpublic-content", "confirmed-low-priv-revision-content",
 })
 
 

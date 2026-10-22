@@ -11,6 +11,10 @@ DESCRIPTIONS = {
     "WordPress core private-content and comment checks":
         "Anonymous REST reads of drafts/private posts, pages, moderated comments "
         "and private edit fields; verify WordPress object status, not HTTP 200 alone.",
+    "WordPress scheduled content boundaries":
+        "Exercise anonymous reads of future posts/pages and require unpublished text proof.",
+    "WordPress revisions, autosaves, protected posts and media boundaries":
+        "Use WordPress-returned IDs to check object-level read permissions without ID guessing.",
     "Admin access-control comparison":
         "Compare /wp-admin/ with a rewritten request and random-path control.",
     "Comment/review marker search":

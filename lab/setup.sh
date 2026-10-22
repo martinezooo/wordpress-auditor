@@ -23,6 +23,31 @@ if ! WP core is-installed 2>/dev/null; then
   WP post create --post_title="Pending post" --post_content="LAB-PENDING-SECRET" --post_status=pending
 fi
 
+# The lab is explicitly local; this enables disposable Application Passwords
+# for real role-boundary tests over loopback HTTP without weakening production.
+WP config set WP_ENVIRONMENT_TYPE local
+
+# Object-boundary fixtures are idempotent so an existing lab gains new cases.
+if ! WP post list --post_type=post --name=scheduled-object-boundary \
+        --format=count | grep -qE '^[1-9][0-9]*$'; then
+  WP post create --post_title="Scheduled object boundary" \
+     --post_name=scheduled-object-boundary --post_content="LAB-FUTURE-SECRET" \
+     --post_status=future --post_date="2037-01-02 03:04:05"
+fi
+if ! WP post list --post_type=post --name=protected-object-boundary \
+        --format=count | grep -qE '^[1-9][0-9]*$'; then
+  WP post create --post_title="Protected object boundary" \
+     --post_name=protected-object-boundary --post_content="LAB-PROTECTED-SECRET" \
+     --post_status=publish --post_password="lab-only-post-pass"
+fi
+if ! WP post list --post_type=post --name=revision-object-boundary \
+        --format=count | grep -qE '^[1-9][0-9]*$'; then
+  revision_id="$(WP post create --porcelain --post_title="Revision object boundary" \
+     --post_name=revision-object-boundary --post_content="LAB-REVISION-ONE" \
+     --post_status=publish)"
+  WP post update "$revision_id" --post_content="LAB-REVISION-TWO"
+fi
+
 case "$MODE" in
   baseline)
     WP option update users_can_register 0

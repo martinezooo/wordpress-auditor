@@ -14,6 +14,9 @@ WP_DISCOVERY = "https://developer.wordpress.org/rest-api/using-the-rest-api/disc
 WP_SITEMAPS = "https://developer.wordpress.org/reference/classes/wp_sitemaps_index/get_index_url/"
 WP_AUTH = "https://developer.wordpress.org/rest-api/using-the-rest-api/authentication/"
 WP_DIRECT_ACCESS = "https://developer.wordpress.org/plugins/wordpress-org/common-issues/#direct-file-access"
+WP_POSTS = "https://developer.wordpress.org/rest-api/reference/posts/"
+WP_REVISIONS = "https://developer.wordpress.org/rest-api/reference/post-revisions/"
+WP_MEDIA = "https://developer.wordpress.org/rest-api/reference/media/"
 
 
 @dataclass(frozen=True)
@@ -178,6 +181,26 @@ CHECKS = [
                         "WP topology REST permalink discovery"), WP_REST),
     Check("WP-76", "Topology", "Embedded same-origin HTML and JavaScript URLs",
           "automatic", ("WP topology embedded HTML/JS URL discovery",), WP_DISCOVERY),
+    Check("WP-77", "Object Access", "Anonymous scheduled/future post content",
+          "automatic", ("WP scheduled future posts",), WP_POSTS),
+    Check("WP-78", "Object Access", "Anonymous scheduled/future page content",
+          "automatic", ("WP scheduled future pages",), WP_POSTS),
+    Check("WP-79", "Object Access", "Anonymous post revision content",
+          "automatic", ("WP anonymous post revisions",), WP_REVISIONS),
+    Check("WP-80", "Object Access", "Anonymous page revision content",
+          "automatic", ("WP anonymous page revisions",), WP_REVISIONS),
+    Check("WP-81", "Object Access", "Anonymous post/page autosave content",
+          "automatic", ("WP anonymous post autosaves",
+                        "WP anonymous page autosaves"), WP_REVISIONS),
+    Check("WP-82", "Object Access", "Password-protected post/page content boundary",
+          "automatic", ("WP password-protected posts",
+                        "WP password-protected pages"), WP_POSTS),
+    Check("WP-83", "Object Access", "Anonymous media edit-context field differential",
+          "automatic", ("WP anonymous media edit-context",), WP_MEDIA),
+    Check("WP-84", "Object Access", "Low-role access to other-author nonpublic objects",
+          "opt-in", ("WP low-role object boundary",), WP_AUTH),
+    Check("WP-85", "Object Access", "Low-role access to other-author revisions",
+          "opt-in", ("WP low-role revision boundary",), WP_AUTH),
 ]
 
 MANUAL_REASON = {
@@ -200,6 +223,8 @@ OPTIONAL_REASON = {
     "WP-47": "Supply --search-comment MARKER",
     "WP-48": "Explicit --post-comment and --comment-post-id required",
     "WP-54": "Provide one or more --role-request LABEL:BURP_REQUEST_FILE",
+    "WP-84": "Provide a confirmed subscriber/customer/contributor/author test session",
+    "WP-85": "Provide a confirmed subscriber/customer/contributor/author test session",
 }
 
 
@@ -244,7 +269,9 @@ def coverage(auditor):
             passive = check.check_id in (WP_DERIVED_IDS)
             error = all(r.status is None for r in matches) and not passive
             blocked = all(r.status in (401, 403) for r in matches)
-            partial = check.check_id in ("WP-12", "WP-48", "WP-51") and any(
+            partial = check.check_id in (
+                "WP-12", "WP-48", "WP-51", "WP-81", "WP-82",
+            ) and any(
                 not any(r.name.startswith(prefix) for r in matches)
                 for prefix in check.starts
             )

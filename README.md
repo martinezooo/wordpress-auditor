@@ -116,6 +116,7 @@ and a no-redirect, same-origin HTTP transport.
 | AJAX | Discover action names from HTML/JavaScript and same-origin asset references |
 | Configuration | Public wp-config backups, .env, debug.log, .git/HEAD and WordPress content directory listings |
 | Core private-content access | Anonymous REST queries for draft/private/pending posts/pages, moderated comments and private comment fields |
+| Object authorization | Scheduled content, password-protected bodies, revisions, autosaves, media edit fields and optional low-role/other-author boundaries |
 | Comment capabilities | Read-only identification of open comments and possible classic/REST/XML-RPC creation channels; no automatic POST |
 | Routing | HTTP HEAD/OPTIONS, admin access checks, path/header normalization controls |
 | Discovery | Installation-aware REST routes, recursive sitemap indexes, robots hints, public post/page/media/custom-type permalinks, HTML/JS URLs and bounded read-back |
@@ -144,6 +145,25 @@ includes that provenance in `discovered-via=...`. Query strings, response
 bodies, cookies and authorization data are not persisted. Discovery proves that
 a public route exists; it is not itself a vulnerability or proof that private
 content was exposed.
+
+### Object-level authorization and exercised impact
+
+Smart/deep scans now use public IDs returned by WordPress itself to exercise
+anonymous read boundaries for scheduled posts/pages, password-protected bodies,
+post/page revisions, autosaves and media `context=edit`. Object IDs are never
+guessed and are never written to reports. A response becomes `PROVED` only when
+the returned WordPress object contains nonempty protected, revision, autosave or
+edit-only content; a status code or an empty object list is not enough.
+
+When a supplied Application Password or `--role-request` confirms a
+subscriber, customer, contributor or author through `/users/me`, the scanner
+also executes bounded reads for nonpublic objects and revisions belonging to a
+different author. Subscriber/customer access to any nonpublic post content, or
+contributor/author access outside its author boundary, is reported only after
+the response content proves the read. Normal `rest_forbidden_status`, 401 and
+403 behavior is recorded as protection, not a finding. WordPress Core normally
+requires `edit_post` for revision collections; see the
+[revision permission check](https://developer.wordpress.org/reference/classes/wp_rest_revisions_controller/get_items_permissions_check/).
 
 ### Focus: WordPress Core misconfigurations, not generic exploitation
 

@@ -564,6 +564,16 @@ class Auditor:
                     enabled=full and self.limit >= 55,
                     reason="requires smart/full mode and at least 55 request budget")
 
+        from .object_access import audit_future_content, anonymous_object_boundaries
+        self._phase("WordPress scheduled content boundaries",
+                    lambda: audit_future_content(self),
+                    enabled=full and self.limit >= 80,
+                    reason="requires smart/full mode and at least 80 request budget")
+        self._phase("WordPress revisions, autosaves, protected posts and media boundaries",
+                    lambda: anonymous_object_boundaries(self),
+                    enabled=full and self.limit >= 150,
+                    reason="requires smart/full mode and at least 150 request budget")
+
         # Protect core security checks from large discovery/wordlist queues.
         def _artifacts():
             from .wp_checks import check_exposures
@@ -623,7 +633,15 @@ class Auditor:
         # Reserve some traffic for authorization comparisons, then crawl every
         # eligible discovered URL left within the user-selected request budget.
         def _discovered():
-            reserved = min(payload_limit + 2, max(0, self.limit // 4))
+            # WordPress object/topology evidence is higher-value than generic
+            # path/header variants. Keep a bounded tail for payload controls,
+            # but do not let it starve verification of real discovered URLs.
+            # A payload run needs two controls, but a large user-selected
+            # payload limit must not consume an ever-growing fraction of the
+            # scan and starve URLs that the target itself disclosed. Twenty-
+            # four requests still cover 22 variants plus both controls.
+            tail_cap = min(24, max(0, self.limit // 6 + 2))
+            reserved = min(payload_limit + 2, tail_cap)
             capacity = max(0, self.limit - self.request_count - reserved)
             self.discovered_checks = suite.probe_discovered(
                 max_cases=min(300 if deep else 200 if full else 8, capacity))

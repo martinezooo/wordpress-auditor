@@ -22,12 +22,14 @@ LOGIN_PASSWORD = "LOCAL_FIXTURE_ONLY_LOGIN_SECRET"
 APPLICATION_PASSWORD = "LOCAL_FIXTURE_ONLY_APP_SECRET"
 USER_NAME = "fixturetestaccount"
 PRIVATE_EMAIL = "private-admin-email@example.invalid"
+ROLE_PRIVATE_CONTENT = "ROLE-PRIVATE-CONTENT-NEVER-REPORT"
 
 
 class WPHandler(BaseHTTPRequestHandler):
     calls = []
     allow_sensitive = False
     fake_profile = False
+    leak_role_objects = False
 
     def log_message(self, *_):
         pass
@@ -95,6 +97,26 @@ class WPHandler(BaseHTTPRequestHandler):
                 self.send(200, b'[{"uuid":"000-111","name":"Automation"}]')
             else:
                 self.send(401)
+        elif path == "/wp-json/wp/v2/posts" and query.get("context") == ["edit"]:
+            if (type(self).leak_role_objects and self._authed()
+                    and "wp_subscriber_session=fixture" in self.headers.get("Cookie", "")):
+                self.send(200, json.dumps([{
+                    "id": 10, "status": "draft", "author": 99,
+                    "content": {"raw": ROLE_PRIVATE_CONTENT},
+                }]).encode())
+            else:
+                self.send(403, b'{"code":"rest_cannot_read"}')
+        elif path == "/wp-json/wp/v2/posts":
+            self.send(200, b'[{"id":10,"status":"publish","author":99}]')
+        elif path == "/wp-json/wp/v2/posts/10/revisions":
+            if (type(self).leak_role_objects and self._authed()
+                    and "wp_subscriber_session=fixture" in self.headers.get("Cookie", "")):
+                self.send(200, json.dumps([{
+                    "id": 110, "parent": 10,
+                    "content": {"raw": ROLE_PRIVATE_CONTENT},
+                }]).encode())
+            else:
+                self.send(403, b'{"code":"rest_cannot_read"}')
         elif path == "/wp-login.php":
             self.send(200, b'<form id="loginform" action="wp-login.php" method="post"></form>')
         elif path == "/wp-admin/profile.php":
@@ -184,6 +206,7 @@ class WordPressIdentityTests(unittest.TestCase):
         WPHandler.calls=[]
         WPHandler.allow_sensitive=False
         WPHandler.fake_profile=False
+        WPHandler.leak_role_objects=False
 
     def _audit(self, *, limit=220, credentials=None):
         a=Auditor(self.url,limit=limit,delay=0,
@@ -359,6 +382,23 @@ class WordPressIdentityTests(unittest.TestCase):
         self.assertFalse(any(x.visibility=="review-low-priv-admin-read" for x in a.results))
         self.assertTrue(any("role label not independently confirmed" in x.detail
                             for x in a.results))
+
+    def test_role_matrix_executes_confirmed_subscriber_object_boundaries(self):
+        from wordpress_auditor.wp_identity import RoleSession
+        WPHandler.leak_role_objects = True
+        creds = Credentials(role_sessions=[RoleSession("subscriber", {
+            "Cookie": "wp_subscriber_session=fixture",
+            "X-WP-Nonce": "fixture-nonce",
+        })])
+        auditor = Auditor(self.url, limit=30, authorized=True)
+        WordPressIdentity(auditor, creds).role_matrix()
+        proved = [result for result in auditor.results if result.proof == "PROVED"]
+        self.assertEqual({result.visibility for result in proved}, {
+            "confirmed-low-priv-nonpublic-content",
+            "confirmed-low-priv-revision-content",
+        })
+        self.assertNotIn(ROLE_PRIVATE_CONTENT, json.dumps(
+            [result.__dict__ for result in auditor.results]))
 
     def test_app_password_does_not_inherit_unrelated_burp_session(self):
         creds = Credentials(username=USER_NAME,application_password=APPLICATION_PASSWORD)
