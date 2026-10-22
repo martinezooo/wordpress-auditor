@@ -89,6 +89,24 @@ class ResumeQueueTests(unittest.TestCase):
             self.assertEqual(state["pending_count"], 1)
             self.assertEqual(state["pending_urls"], [self.url + "/content/002"])
 
+    def test_queue_is_scoped_to_wordpress_root_and_keeps_provenance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = os.path.join(tmp, "queue.json")
+            mounted = Auditor(self.url + "/blog", limit=2)
+            found = self.url + "/blog/unlinked-post/"
+            mounted._wordlist_url(found, source="sitemap:/blog/wp-sitemap.xml")
+            state = save(mounted, queue)
+            self.assertEqual(state["root"], self.url + "/blog/")
+            self.assertEqual(state["sources"][found],
+                             ["sitemap:/blog/wp-sitemap.xml"])
+            same_root = Auditor(self.url + "/blog")
+            self.assertEqual(load_previous(same_root, queue), 0)
+            self.assertEqual(same_root.discovery_sources[found],
+                             {"sitemap:/blog/wp-sitemap.xml"})
+            other_root = Auditor(self.url + "/shop")
+            self.assertEqual(load_previous(other_root, queue), 0)
+            self.assertEqual(other_root.discovery_sources, {})
+
     def test_report_queue_contains_no_cookies_or_query_strings(self):
         with tempfile.TemporaryDirectory() as tmp:
             wl = os.path.join(tmp, "wordlist.txt")

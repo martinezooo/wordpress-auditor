@@ -374,7 +374,7 @@ class TestAuditor(unittest.TestCase):
         self.assertTrue({"form_lookup", "inline_lookup", "page_lookup", "asset_lookup"} <= a.ajax_actions)
         self.assertIn(self.url + "/from-index", a.wordlist)
         self.assertNotIn("secret=omit", "\n".join(a.wordlist))
-        self.assertFalse(any("admin-ajax.php?action=" in r[1] for r in a.results))
+        self.assertFalse(any("admin-ajax.php?action=" in r.url for r in a.results))
 
     def test_ajax_probe_is_opt_in_and_classifies_login(self):
         a = Auditor(self.url, limit=12)

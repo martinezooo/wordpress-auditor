@@ -10,6 +10,8 @@ from collections import Counter
 
 HACKTRICKS = "https://book.hacktricks.wiki/en/network-services-pentesting/pentesting-web/wordpress.html"
 WP_REST = "https://developer.wordpress.org/rest-api/reference/"
+WP_DISCOVERY = "https://developer.wordpress.org/rest-api/using-the-rest-api/discovery/"
+WP_SITEMAPS = "https://developer.wordpress.org/reference/classes/wp_sitemaps_index/get_index_url/"
 WP_AUTH = "https://developer.wordpress.org/rest-api/using-the-rest-api/authentication/"
 WP_DIRECT_ACCESS = "https://developer.wordpress.org/plugins/wordpress-org/common-issues/#direct-file-access"
 
@@ -165,6 +167,17 @@ CHECKS = [
           "automatic", ("WP core file direct access",), WP_DIRECT_ACCESS),
     Check("WP-72", "Files/Setup", "Context-triggered PHP backup/source follow-up",
           "automatic", ("WP direct-access follow-up source backup",), WP_DIRECT_ACCESS),
+    Check("WP-73", "Topology", "Installation subdirectory-aware WordPress routing",
+          "automatic", ("WP topology installation-root routing",), WP_DISCOVERY),
+    Check("WP-74", "Topology", "Recursive robots and sitemap-index discovery",
+          "automatic", ("WP topology sitemap document",
+                        "WP topology sitemap URL discovery"), WP_SITEMAPS),
+    Check("WP-75", "Topology", "REST public post/page/media/custom-type permalinks",
+          "automatic", ("WP topology REST type registry",
+                        "WP topology REST collection",
+                        "WP topology REST permalink discovery"), WP_REST),
+    Check("WP-76", "Topology", "Embedded same-origin HTML and JavaScript URLs",
+          "automatic", ("WP topology embedded HTML/JS URL discovery",), WP_DISCOVERY),
 ]
 
 MANUAL_REASON = {
@@ -192,7 +205,9 @@ OPTIONAL_REASON = {
 
 # Checks whose results are derived (asset analysis, cross-channel comparison):
 # they intentionally carry no HTTP status, so a missing status is not an error.
-WP_DERIVED_IDS = frozenset({"WP-52", "WP-53", "WP-68", "WP-70"})
+WP_DERIVED_IDS = frozenset({
+    "WP-52", "WP-53", "WP-68", "WP-70", "WP-73", "WP-76",
+})
 
 
 def coverage(auditor):

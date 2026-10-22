@@ -17,6 +17,9 @@ DESCRIPTIONS = {
         "Look up the supplied marker in comments, reviews and public feeds.",
     "WordPress/WooCommerce REST and public surfaces":
         "Read WP/Woo endpoints, inspect HTTP status and access restrictions.",
+    "WordPress public content topology discovery":
+        "Recursively parse same-origin sitemaps and enumerate public REST collections, "
+        "including custom post types and bounded pagination.",
     "HTML/JavaScript crawling and AJAX discovery":
         "Discover in-scope links, scripts and candidate AJAX actions.",
     "HTTP HEAD/OPTIONS capability checks":
@@ -77,8 +80,8 @@ def format_terminal(auditor, rows, verbose=False, target=None):
     target = report_url(target or auditor.base)
     states = Counter(
         str(r["status"]) if r["status"] is not None
-        else "PASSIVE" if r["name"] in ("WP plugin asset discovery",
-                                        "WP theme asset discovery") else "ERR"
+        else "ERR" if r.get("visibility") in ("unavailable", "not-evaluated")
+        else "PASSIVE"
         for r in rows)
     unique_verified = auditor.wordlist & (
         getattr(auditor, "successful_get_urls", set()) |

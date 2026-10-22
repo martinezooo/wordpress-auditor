@@ -275,7 +275,10 @@ class ProbeSuite:
                 continue
             if url in prior_verified and not recheck:
                 continue
-            status, body, _ = a.request(path, include_credentials=False)
+            # Keep the exact application-discovered absolute URL. Converting it
+            # back to a slash path would move origin-root links under a configured
+            # /blog WordPress prefix.
+            status, body, _ = a.request(url, include_credentials=False)
             self.completed += 1
             if status in (401, 403):
                 label = "auth-required"
@@ -289,7 +292,11 @@ class ProbeSuite:
                 label = "server-error/requires-review"
             else:
                 label = "response-observed"
-            a.add("discovered URL check", path, status, detail=label, visibility=label)
+            sources = sorted(getattr(a, "discovery_sources", {}).get(url, ()))
+            detail = label
+            if sources:
+                detail += "; discovered-via=" + ",".join(sources[:3])
+            a.add("discovered URL check", url, status, detail=detail, visibility=label)
             count += 1
         return count
 

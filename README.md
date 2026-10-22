@@ -71,6 +71,9 @@ Do not use sudo or pip install --break-system-packages for this tool.
 # Standard smart scan: WordPress checks, live colored progress, reports
 wordpress-auditor --url https://your-authorized-lab.example
 
+# WordPress installed below the origin root: pass the actual installation root
+wordpress-auditor --url https://your-authorized-lab.example/blog/
+
 # Detailed phase/check output and explicitly forced colors
 wordpress-auditor --url https://your-authorized-lab.example --verbose --color always
 
@@ -115,11 +118,32 @@ and a no-redirect, same-origin HTTP transport.
 | Core private-content access | Anonymous REST queries for draft/private/pending posts/pages, moderated comments and private comment fields |
 | Comment capabilities | Read-only identification of open comments and possible classic/REST/XML-RPC creation channels; no automatic POST |
 | Routing | HTTP HEAD/OPTIONS, admin access checks, path/header normalization controls |
-| Discovery | REST route index, HTML, JS, sitemap, persisted wordlist and bounded read-back |
+| Discovery | Installation-aware REST routes, recursive sitemap indexes, robots hints, public post/page/media/custom-type permalinks, HTML/JS URLs and bounded read-back |
 
 Plugin and theme asset paths are identified **without version matching or CVE lookups**.
 Sensitive response bodies, user email addresses, passwords, tokens and cookies
 are never copied into report findings.
+
+### Real WordPress topology and unlinked public content
+
+The value passed to `--url` is treated as the WordPress installation root. For
+`https://host.example/blog/`, scanner-owned probes therefore use
+`/blog/wp-json/`, `/blog/wp-admin/` and `/blog/wp-sitemap.xml` instead of
+silently escaping to the domain root.
+
+In smart and deep scans the topology phase follows same-origin sitemap indexes
+recursively, reads `Sitemap:` hints from robots.txt, inspects the public REST
+type registry, and enumerates bounded pages of public collections. This includes
+custom post types that expose `rest_namespace` and `rest_base`, not only posts
+and pages. Public permalinks found in REST objects are placed in the same safe
+GET queue as URLs found in HTML and JavaScript.
+
+Every queued URL retains discovery provenance such as `html:`, `javascript:`,
+`sitemap:` or `rest:` in `url-queue.json`. A subsequent URL-check result also
+includes that provenance in `discovered-via=...`. Query strings, response
+bodies, cookies and authorization data are not persisted. Discovery proves that
+a public route exists; it is not itself a vulnerability or proof that private
+content was exposed.
 
 ### Focus: WordPress Core misconfigurations, not generic exploitation
 

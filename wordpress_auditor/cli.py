@@ -260,7 +260,7 @@ def main(argv=None):
                     continue
                 parsed = urlsplit(entry)
                 if safe_candidate(auditor, parsed.path):
-                    auditor._wordlist_url(parsed.path)
+                    auditor._wordlist_url(entry, source="previous-wordlist")
     queue_path = os.path.join(os.path.dirname(os.path.abspath(wordlist_out)),
                               "url-queue.json")
     load_url_queue(auditor, queue_path)

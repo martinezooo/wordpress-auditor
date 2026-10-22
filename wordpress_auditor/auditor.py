@@ -91,6 +91,7 @@ class Auditor:
         if p.username or p.password or not p.hostname:
             raise ValueError("target URL must not contain embedded credentials")
         self.origin = (p.scheme.lower(), p.hostname.lower(), p.port or (443 if p.scheme == "https" else 80))
+        self.wp_root_path = p.path.rstrip("/")
         self.headers = dict(headers or {})
         if cookies:
             self.headers["Cookie"] = cookies if isinstance(cookies, str) else "; ".join(
@@ -104,6 +105,7 @@ class Auditor:
         self.plugin_slugs = set()
         self.theme_slugs = set()
         self.wordlist = set()
+        self.discovery_sources = {}
         self.rest_route_methods = {}
         self.xmlrpc_methods = set()
         self.comment_forms = set()
@@ -127,6 +129,31 @@ class Auditor:
             urllib.request.ProxyHandler({"http": proxy, "https": proxy} if proxy else {}),
         )
 
+    def resolve_url(self, target):
+        """Resolve scanner-owned paths relative to the configured WP install.
+
+        A target of https://host/blog means WordPress lives under /blog.  URLs
+        discovered from the application should be passed as absolute URLs and
+        are therefore preserved exactly, including genuine origin-root links.
+        """
+        if not isinstance(target, str):
+            raise ValueError("target must be a string")
+        parsed = urllib.parse.urlsplit(target)
+        if parsed.scheme or parsed.netloc:
+            return safe_url(self.base, target)
+        if target.startswith("/") and not target.startswith("//"):
+            raw = urllib.parse.urlsplit(target)
+            path = raw.path or "/"
+            prefix = self.wp_root_path
+            if prefix and path != prefix and not path.startswith(prefix + "/"):
+                path = prefix + (path if path.startswith("/") else "/" + path)
+            if prefix and path == prefix:
+                path += "/"
+            origin = urllib.parse.urlsplit(self.base)
+            return urllib.parse.urlunsplit(
+                (origin.scheme, origin.netloc, path, raw.query, ""))
+        return safe_url(self.base, target)
+
     def _allowed(self, target):
         p = urllib.parse.urlsplit(urllib.parse.urljoin(self.base + "/", target))
         return (
@@ -147,7 +174,7 @@ class Auditor:
                 include_credentials=None, test_headers=False, isolate_headers=False):
         if self.request_count >= self.limit:
             return None, b"", {"error": "request budget exhausted"}
-        url = safe_url(self.base, path)
+        url = self.resolve_url(path)
         if not self._allowed(url):
             raise ValueError("refusing cross-origin or scheme-changing request")
         self.request_count += 1
@@ -213,7 +240,7 @@ class Auditor:
         from .assessment import assess, proof_state
         severity, confidence = assess(name, status, visibility or "unavailable", snippet)
         proof = proof_state(visibility or "unavailable", severity)
-        result = Result(name, report_url(safe_url(self.base, path)),
+        result = Result(name, report_url(self.resolve_url(path)),
                         status, visibility or "unavailable", snippet,
                         severity, confidence, sanitize_detail(meaning, 700),
                         sanitize_detail(action, 500), reference[:500], proof)
@@ -221,9 +248,14 @@ class Auditor:
         if self.finding_callback:
             self.finding_callback(self, result)
 
-    def _wordlist_url(self, url):
-        if self._allowed(url):
-            self.wordlist.add(report_url(safe_url(self.base, url)))
+    def _wordlist_url(self, url, source="discovered"):
+        resolved = self.resolve_url(url)
+        if self._allowed(resolved):
+            clean = report_url(resolved)
+            self.wordlist.add(clean)
+            if isinstance(source, str) and source:
+                self.discovery_sources.setdefault(clean, set()).add(
+                    sanitize_detail(source, 160))
 
     @staticmethod
     def extract_ajax_actions(text):
@@ -242,28 +274,34 @@ class Auditor:
         return bool(re.search(rb"wp-login|loginform|name=['\"]log['\"]|nonce|_wpnonce", body, re.I))
 
     def discover_ajax(self, probe=False, page_cap=4, asset_cap=8):
-        pending, pages, assets = ["/"], set(), set()
+        from .topology import discover_header_urls, discover_text_urls, _document_url
+
+        pending, pages, assets = [self.resolve_url("/")], set(), set()
         while pending and len(pages) < page_cap and self.request_count < self.limit:
             path = pending.pop(0)
             if path in pages or not self._allowed(path):
                 continue
             pages.add(path)
-            status, body, _ = self.request(path)
+            status, body, headers = self.request(path)
             if status != 200:
                 continue
             text = body.decode("utf-8", "ignore")
-            self._wordlist_url(path)
+            page_url = self.resolve_url(path)
+            page_source = "html:" + urllib.parse.urlsplit(page_url).path
+            self._wordlist_url(page_url, source=page_source)
+            discover_header_urls(self, headers, page_source)
+            discover_text_urls(self, text, page_url, page_source)
             self.ajax_actions.update(self.extract_ajax_actions(text))
             if re.search(r"""<form\b[^>]{0,800}\baction\s*=\s*['"][^'"]*wp-comments-post\.php(?:\?[^'"]*)?['"]""",
                          text, re.I):
-                self.comment_forms.add(report_url(safe_url(self.base, path)))
+                self.comment_forms.add(report_url(page_url))
             for raw in re.findall(r"""(?:href|src|action)\s*=\s*['"]([^'"]+)['"]""", text, re.I):
-                target = safe_url(self.base, html.unescape(raw))
+                target = _document_url(page_url, html.unescape(raw))
                 if not self._allowed(target):
                     continue
                 parsed = urllib.parse.urlsplit(target)
                 clean = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", "", ""))
-                self._wordlist_url(clean)
+                self._wordlist_url(clean, source=page_source)
                 if parsed.path.endswith(".js") and len(assets) < asset_cap:
                     assets.add(clean)
                 elif not parsed.path.rsplit("/", 1)[-1].count(".") and len(pending) < page_cap:
@@ -275,19 +313,30 @@ class Auditor:
                 if re.search(r"admin-ajax|ajaxurl|wp_ajax|data-action", text, re.I):
                     self.ajax_actions.add(raw)
             for raw in re.findall(r"""<(?:loc|url)\b[^>]*>([^<]+)""", text, re.I):
-                target = safe_url(self.base, html.unescape(raw.strip()))
+                target = _document_url(page_url, html.unescape(raw.strip()))
                 if self._allowed(target):
-                    self._wordlist_url(target)
+                    self._wordlist_url(target, source=page_source)
             for extra in ("/wp-json/", "/wp-sitemap.xml", "/sitemap.xml"):
-                if len(pages) < page_cap and extra not in pages and extra not in pending:
-                    pending.append(extra)
+                candidate = self.resolve_url(extra)
+                if len(pages) < page_cap and candidate not in pages and candidate not in pending:
+                    pending.append(candidate)
         for asset in list(assets):
             if self.request_count >= self.limit:
                 break
             status, body, _ = self.request(asset)
             if status == 200:
-                self.ajax_actions.update(self.extract_ajax_actions(body.decode("utf-8", "ignore")))
-                self._wordlist_url(asset)
+                text = body.decode("utf-8", "ignore")
+                source = "javascript:" + urllib.parse.urlsplit(asset).path
+                self.ajax_actions.update(self.extract_ajax_actions(text))
+                discover_text_urls(self, text, asset, source, include_attributes=False)
+                self._wordlist_url(asset, source=source)
+        embedded = sum(
+            1 for labels in self.discovery_sources.values()
+            if any(label.startswith(("html:", "javascript:")) for label in labels)
+        )
+        self.add("WP topology embedded HTML/JS URL discovery", "/", None,
+                 visibility="observed",
+                 detail=f"{embedded} same-origin URLs recorded with HTML/JavaScript provenance")
         endpoint = "/wp-admin/admin-ajax.php"
         if probe and self.ajax_actions and self.request_count < self.limit:
             baseline_status, baseline, _ = self.request(endpoint)
@@ -296,7 +345,7 @@ class Auditor:
                     break
                 path = endpoint + "?action=" + urllib.parse.quote(action, safe="")
                 status, body, _ = self.request(path, include_credentials=False)
-                self._wordlist_url(endpoint)
+                self._wordlist_url(endpoint, source="ajax-discovery")
                 if status in (401, 403) or self._is_login_or_nonce(body):
                     state = "auth-required/requires-review"
                 elif status == baseline_status and hashlib.sha256(body).digest() == hashlib.sha256(baseline).digest():
@@ -455,7 +504,7 @@ class Auditor:
                     "/wp-json/wc/store/v1/products/reviews?per_page=1",
                     "/wp-admin/", "/wp-login.php", "/wp-admin/admin-ajax.php",
                     "/robots.txt", "/wp-sitemap.xml", "/sitemap_index.xml",
-                    "/.well-known/security.txt",
+                    safe_url(self.base, "/.well-known/security.txt"),
                 ]
             # Adaptive phase budget: leave room for crawl, methods and payloads.
             core_cap = len(paths) if not full else min(len(paths), max(6, self.limit // 5))
@@ -496,6 +545,18 @@ class Auditor:
                     self.results[-1].detail = sanitize_detail(
                         self.results[-1].detail + " marker-found")
         self._phase("WordPress/WooCommerce REST and public surfaces", _core)
+
+        from .topology import discover_topology
+        self._phase(
+            "WordPress public content topology discovery",
+            lambda: discover_topology(
+                self,
+                max_sitemaps=6 if deep else 4,
+                max_rest_pages=8 if deep else 6,
+            ),
+            enabled=full and self.limit >= 80,
+            reason="requires smart/full mode and at least 80 request budget",
+        )
 
         from .core_scenarios import audit_wordpress_core
         self._phase("WordPress core private-content and comment checks",
